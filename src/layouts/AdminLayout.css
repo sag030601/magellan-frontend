@@ -1,0 +1,66 @@
+/* Admin layout – Blade-style structure */
+
+.admin-wrapper {
+  --sidebar-width: 16rem;
+  --sidebar-width-collapsed: 5rem;
+}
+
+.admin-sidebar-wrap {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 40;
+  width: var(--sidebar-width);
+  transition: width 0.3s ease, transform 0.3s ease;
+}
+
+.admin-content-wrapper {
+  margin-left: var(--sidebar-width);
+  transition: margin-left 0.3s ease;
+  min-height: 100vh;
+}
+
+.admin-wrapper.sidebar-collapsed .admin-sidebar-wrap {
+  width: var(--sidebar-width-collapsed);
+}
+
+.admin-wrapper.sidebar-collapsed .admin-content-wrapper {
+  margin-left: var(--sidebar-width-collapsed);
+}
+
+.admin-main {
+  background: linear-gradient(to bottom right, #f8fafc, #f0fdfa);
+}
+
+.admin-footer {
+  flex-shrink: 0;
+}
+
+.admin-scroll-top {
+  transition: opacity 0.2s ease;
+}
+
+/* Mobile: sidebar as overlay */
+@media (max-width: 768px) {
+  .admin-sidebar-wrap {
+    transform: translateX(-100%);
+    width: var(--sidebar-width) !important;
+  }
+
+  .admin-sidebar-wrap.mobile-open {
+    transform: translateX(0);
+    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.15);
+  }
+
+  .admin-content-wrapper {
+    margin-left: 0;
+  }
+
+  .admin-sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 30;
+  }
+}
