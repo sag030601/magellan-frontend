@@ -1,38 +1,40 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-
-const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+import { apiFetch } from "../lib/api";
+import { downloadReportCsv, downloadReportPdf } from "../lib/reportExport";
 
 function formatDate(val) {
   if (!val) return "—";
-  const d = new Date(val);
+  const d = typeof val === "number" ? new Date(val * 1000) : new Date(val);
   if (Number.isNaN(d.getTime())) return "—";
-  const day = String(d.getDate()).padStart(2, "0");
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const year = d.getFullYear();
-  return `${day}-${month}-${year}`;
+  return `${String(d.getDate()).padStart(2, "0")}-${String(d.getMonth() + 1).padStart(2, "0")}-${d.getFullYear()}`;
+}
+
+function toEpochMillis(val) {
+  if (!val) return null;
+  const d = typeof val === "number" ? new Date(val * 1000) : new Date(val);
+  const t = d.getTime();
+  return Number.isNaN(t) ? null : t;
 }
 
 function daysRemaining(signOffDue) {
   if (!signOffDue) return "—";
   try {
-    const signOffDate = new Date(signOffDue);
-    signOffDate.setHours(0, 0, 0, 0);
+    const ms = toEpochMillis(signOffDue);
+    if (!ms) return "—";
+    const due = new Date(ms);
+    due.setHours(0, 0, 0, 0);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    if (signOffDate <= today) return "0Y 0M 0D";
-    const y = signOffDate.getFullYear() - today.getFullYear();
-    const m = signOffDate.getMonth() - today.getMonth();
-    const d = signOffDate.getDate() - today.getDate();
-    let totalMonths = y * 12 + m;
-    if (d < 0) totalMonths -= 1;
+    if (due <= today) return "0Y 0M 0D";
+    let totalMonths = (due.getFullYear() - today.getFullYear()) * 12 + (due.getMonth() - today.getMonth());
+    if (due.getDate() < today.getDate()) totalMonths -= 1;
     const years = Math.floor(totalMonths / 12);
     const months = totalMonths % 12;
     const from = new Date(today.getFullYear(), today.getMonth() + totalMonths, today.getDate());
-    let days = Math.round((signOffDate - from) / (24 * 60 * 60 * 1000));
-    if (days < 0) days = 0;
+    const days = Math.max(0, Math.round((due - from) / 86400000));
     return `${years}Y ${months}M ${days}D`;
-  } catch (_) {
+  } catch {
     return "—";
   }
 }
@@ -41,7 +43,53 @@ function cap(str) {
   return str != null && String(str).trim() !== "" ? String(str).toUpperCase() : "—";
 }
 
+function buildExportTable(reportType, records, to) {
+  const today = new Date().toISOString().slice(0, 10);
+
+  if (reportType === "signOn") {
+    return {
+      headers: ["Crew ID", "Crew Name", "Rank", "Nationality", "Current Ship", "DOB", "Place of Birth", "Passport No.", "PPT Issue", "PPT Expiry", "CDC No.", "CDC Issue", "CDC Expiry", "Contract Start", "Sign On Date", "Sign Off Due"],
+      rows: records.map((r) => [
+        r.candidate_id, `${cap(r.given_name)} ${cap(r.surname)}`, cap(r.rank_name), cap(r.nationality_name), cap(r.vessel_name),
+        formatDate(r.date_of_birth), cap(r.place_of_birth), r.passport_number ?? "", formatDate(r.passport_issue_date), formatDate(r.passport_expiry_date),
+        r.cdc_number ?? "", formatDate(r.cdc_issue_date), formatDate(r.cdc_expiry_date),
+        formatDate(r.contract_start_date), formatDate(r.sign_on_date), formatDate(r.sign_off_due),
+      ]),
+      baseName: `sign-on-report-${today}`,
+    };
+  }
+
+  if (reportType === "allSignOn") {
+    return {
+      headers: ["Crew ID", "Crew Name", "Rank", "DOB", "Current Ship", "Status", "Contract Start", "Sign On Date", "Sign Off Due", "Days Remaining"],
+      rows: records.map((r) => {
+        const onMs = toEpochMillis(r.sign_on_date);
+        const offMs = toEpochMillis(r.sign_off_due);
+        let status = "—";
+        if (onMs && offMs) {
+          const now = Date.now();
+          const startOfDay = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+          const cmp = startOfDay(toEpochMillis(to) ?? now);
+          status = cmp >= startOfDay(onMs) && cmp <= startOfDay(offMs) ? "ON-BOARD" : "ON-LEAVE";
+        }
+        return [r.candidate_id, `${cap(r.given_name)} ${cap(r.surname)}`, cap(r.rank_name), formatDate(r.date_of_birth), cap(r.vessel_name), status, formatDate(r.contract_start_date), formatDate(r.sign_on_date), formatDate(r.sign_off_due), daysRemaining(r.sign_off_due)];
+      }),
+      baseName: `all-sign-on-report-${today}`,
+    };
+  }
+
+  return {
+    headers: ["Crew ID", "Crew Name", "Rank", "DOB", "Current/Previous Ship", "Status", "Sign On Date", "Sign Off Date", "Contract Days", "Sign Off Reason"],
+    rows: records.map((r) => [
+      r.candidate_id, `${cap(r.given_name)} ${cap(r.surname)}`, cap(r.rank_name), formatDate(r.date_of_birth), cap(r.vessel_name), "ON-LEAVE",
+      formatDate(r.sign_on_date), formatDate(r.sign_off_date), daysRemaining(r.sign_off_due), cap(r.sign_off_reason),
+    ]),
+    baseName: `sign-off-report-${today}`,
+  };
+}
+
 export default function SignOnSignOffReport() {
+  const [principals, setPrincipals] = useState([]);
   const [ranks, setRanks] = useState([]);
   const [vesselNames, setVesselNames] = useState([]);
   const [vesselTypes, setVesselTypes] = useState([]);
@@ -49,64 +97,31 @@ export default function SignOnSignOffReport() {
   const [loadingOptions, setLoadingOptions] = useState(true);
   const [loadingReport, setLoadingReport] = useState(false);
   const [error, setError] = useState(null);
-
-  const [filters, setFilters] = useState({
-    rank: "",
-    vessel_name: "",
-    status: "",
-    from_date: "",
-    to_date: "",
-    nationality: "",
-    vessel_type: "",
-  });
-
+  const [filters, setFilters] = useState({ employer_principal: "", vessel_name: "", rank: "", status: "", nationality: "", vessel_type: "", from_date: "", to_date: "" });
   const [result, setResult] = useState(null);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   useEffect(() => {
-    const fetchOptions = async () => {
-      try {
-        const res = await fetch(`${apiBase}/api/reports/filter-options`);
-        if (!res.ok) throw new Error("Failed to load filter options");
-        const data = await res.json();
-        setRanks(data.ranks || []);
-        setVesselNames(data.vesselNames || []);
-        setVesselTypes(data.vesselTypes || []);
-        setCountries(data.countries || []);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoadingOptions(false);
-      }
-    };
-    fetchOptions();
+    apiFetch("/api/reports/filter-options")
+      .then((r) => r.ok ? r.json() : Promise.reject("Failed to load filter options"))
+      .then((d) => { setPrincipals(d.principals || []); setVesselNames(d.vesselNames || []); setRanks(d.ranks || []); setCountries(d.countries || []); setVesselTypes(d.vesselTypes || []); })
+      .catch((e) => setError(typeof e === "string" ? e : e.message))
+      .finally(() => setLoadingOptions(false));
   }, []);
 
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    setFilters((prev) => ({ ...prev, [name]: value }));
-  };
+  const handleChange = (e) => setFilters((prev) => ({ ...prev, [e.target.name]: e.target.value }));
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!filters.status) {
-      setError("Please select a status.");
-      return;
-    }
+    if (!filters.status) { setError("Please select a status."); return; }
     setError(null);
     setLoadingReport(true);
     try {
       const params = new URLSearchParams();
-      if (filters.rank) params.set("rank", filters.rank);
-      if (filters.vessel_name) params.set("vessel_name", filters.vessel_name);
-      params.set("status", filters.status);
-      if (filters.from_date) params.set("from_date", filters.from_date);
-      if (filters.to_date) params.set("to_date", filters.to_date);
-      if (filters.nationality) params.set("nationality", filters.nationality);
-      if (filters.vessel_type) params.set("vessel_type", filters.vessel_type);
-      const res = await fetch(`${apiBase}/api/reports/sign-on-off?${params}`);
+      Object.entries(filters).forEach(([k, v]) => { if (v) params.set(k, v); });
+      const res = await apiFetch(`/api/reports/sign-on-off?${params}`);
       if (!res.ok) throw new Error("Failed to generate report");
-      const data = await res.json();
-      setResult(data);
+      setResult(await res.json());
     } catch (err) {
       setError(err.message);
       setResult(null);
@@ -115,69 +130,69 @@ export default function SignOnSignOffReport() {
     }
   };
 
-  const handlePrint = () => {
-    window.print();
-  };
-
   const { records = [], reportType, from, to } = result || {};
   const hasRecords = records.length > 0;
 
+  const exportCsv = () => {
+    if (!hasRecords) return;
+    const { headers, rows, baseName } = buildExportTable(reportType, records, to);
+    downloadReportCsv(headers, rows, `${baseName}.csv`);
+  };
+
+  const exportPdf = async () => {
+    if (!hasRecords || exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      const { headers, rows, baseName } = buildExportTable(reportType, records, to);
+      await downloadReportPdf({ headers, rows, filename: `${baseName}.pdf` });
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
+  const fieldStyle = { borderColor: "var(--border-primary)", background: "var(--bg-input)", color: "var(--text-primary)" };
+  const fieldCls = "w-full h-9 rounded-lg border px-3 py-1 text-sm focus:outline-none focus:ring-2 focus:border-[var(--border-focus)] focus:ring-[color:var(--border-focus)]";
+
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white">
-          <h1 className="text-xl font-bold text-slate-800 tracking-tight">Report List</h1>
+    <div className="space-y-6 max-w-7xl mx-auto px-4">
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--bg-card)", boxShadow: "var(--shadow-sm)", border: "1px solid var(--border-primary)" }}>
+        <div className="px-6 py-4 border-b" style={{ borderColor: "var(--border-primary)", background: "linear-gradient(to right, var(--bg-secondary), var(--bg-card))" }}>
+          <h1 className="text-xl font-bold tracking-tight" style={{ color: "var(--text-primary)" }}>Report List</h1>
         </div>
       </div>
 
       {/* Filter form */}
-      <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+      <div className="rounded-xl overflow-hidden" style={{ background: "var(--bg-card)", boxShadow: "var(--shadow-sm)", border: "1px solid var(--border-primary)" }}>
         <div className="px-6 py-5">
           <form onSubmit={handleSubmit} className="space-y-4">
             {error && !result && (
-              <div className="rounded-lg bg-red-50 border border-red-100 px-4 py-3 text-red-800 text-sm">
-                {error}
-              </div>
+              <div className="rounded-lg border px-4 py-3 text-sm" style={{ background: "var(--bg-secondary)", borderColor: "var(--danger)", color: "var(--danger)" }}>{error}</div>
             )}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Rank</label>
-                <select
-                  name="rank"
-                  value={filters.rank}
-                  onChange={handleChange}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                >
-                  <option value="">Select Rank</option>
-                  {ranks.map((r) => (
-                    <option key={r.id} value={r.id}>{r.name}</option>
-                  ))}
+                <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-secondary)" }}>Name of Employer/Principal</label>
+                <select name="employer_principal" value={filters.employer_principal} onChange={handleChange} className={fieldCls} style={fieldStyle}>
+                  <option value="">Select Employer/Principal</option>
+                  {principals.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Vessel Name</label>
-                <select
-                  name="vessel_name"
-                  value={filters.vessel_name}
-                  onChange={handleChange}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                >
+                <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-secondary)" }}>Vessel Name</label>
+                <select name="vessel_name" value={filters.vessel_name} onChange={handleChange} className={fieldCls} style={fieldStyle}>
                   <option value="">Select Vessel Name</option>
-                  {vesselNames.map((name) => (
-                    <option key={name} value={name}>{name}</option>
-                  ))}
+                  {vesselNames.map((n) => <option key={n} value={n}>{n}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Status <span className="text-red-500">*</span></label>
-                <select
-                  name="status"
-                  value={filters.status}
-                  onChange={handleChange}
-                  required
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                >
+                <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-secondary)" }}>Rank</label>
+                <select name="rank" value={filters.rank} onChange={handleChange} className={fieldCls} style={fieldStyle}>
+                  <option value="">Select Rank</option>
+                  {ranks.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-secondary)" }}>Status <span style={{ color: "var(--danger)" }}>*</span></label>
+                <select name="status" value={filters.status} onChange={handleChange} required className={fieldCls} style={fieldStyle}>
                   <option value="">Select Status</option>
                   <option value="sign-on">Signed on</option>
                   <option value="13">Onboard with us</option>
@@ -185,60 +200,30 @@ export default function SignOnSignOffReport() {
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">From Date</label>
-                <input
-                  type="date"
-                  name="from_date"
-                  value={filters.from_date}
-                  onChange={handleChange}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">To Date</label>
-                <input
-                  type="date"
-                  name="to_date"
-                  value={filters.to_date}
-                  onChange={handleChange}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Nationality</label>
-                <select
-                  name="nationality"
-                  value={filters.nationality}
-                  onChange={handleChange}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                >
+                <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-secondary)" }}>Nationality</label>
+                <select name="nationality" value={filters.nationality} onChange={handleChange} className={fieldCls} style={fieldStyle}>
                   <option value="">Select Nationality</option>
-                  {countries.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
+                  {countries.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Vessel Type</label>
-                <select
-                  name="vessel_type"
-                  value={filters.vessel_type}
-                  onChange={handleChange}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                >
+                <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-secondary)" }}>Vessel Type</label>
+                <select name="vessel_type" value={filters.vessel_type} onChange={handleChange} className={fieldCls} style={fieldStyle}>
                   <option value="">Select Vessel Type</option>
-                  {vesselTypes.map((vt) => (
-                    <option key={vt.id} value={vt.id}>{vt.name}</option>
-                  ))}
+                  {vesselTypes.map((vt) => <option key={vt.id} value={vt.id}>{vt.name}</option>)}
                 </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-secondary)" }}>From Date</label>
+                <input type="date" name="from_date" value={filters.from_date} onChange={handleChange} className={fieldCls} style={fieldStyle} />
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-secondary)" }}>To Date</label>
+                <input type="date" name="to_date" value={filters.to_date} onChange={handleChange} className={fieldCls} style={fieldStyle} />
               </div>
             </div>
             <div className="flex justify-end">
-              <button
-                type="submit"
-                disabled={loadingReport}
-                className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed"
-              >
+              <button type="submit" disabled={loadingReport} className="btn btn-primary h-9 px-4 text-sm font-medium rounded-lg disabled:opacity-60">
                 {loadingReport ? "Generating…" : "Generate"}
               </button>
             </div>
@@ -248,75 +233,54 @@ export default function SignOnSignOffReport() {
 
       {/* Report result */}
       {result && (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden print:shadow-none print:border">
-          <div className="px-6 py-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-slate-50/80">
+        <div className="rounded-xl print:shadow-none print:border" style={{ background: "var(--bg-card)", boxShadow: "var(--shadow-sm)", border: "1px solid var(--border-primary)" }}>
+          <div className="px-6 py-4 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3" style={{ borderColor: "var(--border-primary)", background: "var(--bg-secondary)" }}>
             <div>
-              <h2 className="text-lg font-semibold text-slate-800">Report Details</h2>
-              {from && to && (
-                <p className="text-sm text-slate-500 mt-0.5">
-                  Period – {formatDate(from)} to {formatDate(to)}
-                </p>
-              )}
+              <h2 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>Report Details</h2>
+              {from && to && <p className="text-sm mt-0.5" style={{ color: "var(--text-tertiary)" }}>Period – {formatDate(from)} to {formatDate(to)}</p>}
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handlePrint}
-                className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 focus:ring-2 focus:ring-red-500 focus:ring-offset-2 print:hidden"
-              >
-                <i className="fas fa-file-pdf mr-2" />
-                Print PDF
+            <div className="flex items-center gap-2 print:hidden">
+              <button type="button" onClick={exportCsv} disabled={!hasRecords} className="px-4 py-2 text-white text-sm font-medium rounded-lg disabled:opacity-50 hover:opacity-90" style={{ background: "var(--accent)" }}>
+                Download CSV
+              </button>
+              <button type="button" onClick={exportPdf} disabled={!hasRecords || exportingPdf} className="px-4 py-2 text-white text-sm font-medium rounded-lg disabled:opacity-50 hover:opacity-90" style={{ background: "var(--danger)" }}>
+                {exportingPdf ? "Preparing PDF…" : "Download PDF"}
               </button>
             </div>
           </div>
           <div className="p-6 overflow-x-auto">
             {!hasRecords && (
-              <div className="py-12 text-center text-slate-500 bg-slate-50 rounded-lg">
-                No records found for the selected criteria.
-              </div>
+              <div className="py-12 text-center rounded-lg" style={{ color: "var(--text-tertiary)", background: "var(--bg-secondary)" }}>No records found for the selected criteria.</div>
             )}
 
             {hasRecords && reportType === "signOn" && (
-              <table className="w-full text-left border-collapse text-sm min-w-[900px]">
+              <table className="w-full text-left border-collapse text-sm min-w-[1050px]" style={{ color: "var(--text-primary)" }}>
                 <thead>
-                  <tr className="bg-indigo-600 text-white">
-                    <th className="px-3 py-2 font-semibold">Crew ID</th>
-                    <th className="px-3 py-2 font-semibold">Crew Name</th>
-                    <th className="px-3 py-2 font-semibold">Rank</th>
-                    <th className="px-3 py-2 font-semibold">Nationality</th>
-                    <th className="px-3 py-2 font-semibold">Date of Birth</th>
-                    <th className="px-3 py-2 font-semibold">Place of Birth</th>
-                    <th className="px-3 py-2 font-semibold">Passport No.</th>
-                    <th className="px-3 py-2 font-semibold">PPT Issue</th>
-                    <th className="px-3 py-2 font-semibold">PPT Expiry</th>
-                    <th className="px-3 py-2 font-semibold">CDC No.</th>
-                    <th className="px-3 py-2 font-semibold">CDC Issue</th>
-                    <th className="px-3 py-2 font-semibold">CDC Expiry</th>
-                    <th className="px-3 py-2 font-semibold">Sign On Date</th>
-                    <th className="px-3 py-2 font-semibold">Sign Off Due</th>
+                  <tr style={{ background: "linear-gradient(180deg, var(--marine-700), var(--marine-800))", color: "#fff" }}>
+                    {["Crew ID", "Crew Name", "Rank", "Nationality", "Current Ship", "DOB", "Place of Birth", "Passport No.", "PPT Issue", "PPT Expiry", "CDC No.", "CDC Issue", "CDC Expiry", "Contract Start", "Sign On Date", "Sign Off Due"].map((h) => (
+                      <th key={h} className="px-3 py-2 font-semibold">{h}</th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
                   {records.map((r) => (
-                    <tr key={r.doc_id || r.candidate_id} className="border-b border-slate-100 hover:bg-slate-50/80">
-                      <td className="px-3 py-2">
-                        <Link to={`/admin/candidates/${r.candidate_id}`} className="text-indigo-600 hover:underline font-medium">
-                          {cap(r.candidate_id)}
-                        </Link>
-                      </td>
+                    <tr key={r.doc_id || r.candidate_id} className="border-b hover:bg-[var(--bg-hover)]" style={{ borderColor: "var(--border-primary)" }}>
+                      <td className="px-3 py-2"><Link to={`/admin/candidates/${r.candidate_id}`} className="hover:underline font-medium" style={{ color: "var(--accent)" }}>{cap(r.candidate_id)}</Link></td>
                       <td className="px-3 py-2">{cap(r.given_name)} {cap(r.surname)}</td>
                       <td className="px-3 py-2">{cap(r.rank_name)}</td>
                       <td className="px-3 py-2">{cap(r.nationality_name)}</td>
-                      <td className="px-3 py-2">{formatDate(r.date_of_birth)}</td>
+                      <td className="px-3 py-2">{cap(r.vessel_name)}</td>
+                      <td className="px-3 py-2 cell-nowrap">{formatDate(r.date_of_birth)}</td>
                       <td className="px-3 py-2">{cap(r.place_of_birth)}</td>
                       <td className="px-3 py-2">{r.passport_number ?? "—"}</td>
-                      <td className="px-3 py-2">{formatDate(r.passport_issue_date)}</td>
-                      <td className="px-3 py-2">{formatDate(r.passport_expiry_date)}</td>
+                      <td className="px-3 py-2 cell-nowrap">{formatDate(r.passport_issue_date)}</td>
+                      <td className="px-3 py-2 cell-nowrap">{formatDate(r.passport_expiry_date)}</td>
                       <td className="px-3 py-2">{r.cdc_number ?? "—"}</td>
-                      <td className="px-3 py-2">{formatDate(r.cdc_issue_date)}</td>
-                      <td className="px-3 py-2">{formatDate(r.cdc_expiry_date)}</td>
-                      <td className="px-3 py-2">{formatDate(r.sign_on_date)}</td>
-                      <td className="px-3 py-2">{formatDate(r.sign_off_due)}</td>
+                      <td className="px-3 py-2 cell-nowrap">{formatDate(r.cdc_issue_date)}</td>
+                      <td className="px-3 py-2 cell-nowrap">{formatDate(r.cdc_expiry_date)}</td>
+                      <td className="px-3 py-2 cell-nowrap">{formatDate(r.contract_start_date)}</td>
+                      <td className="px-3 py-2 cell-nowrap">{formatDate(r.sign_on_date)}</td>
+                      <td className="px-3 py-2 cell-nowrap">{formatDate(r.sign_off_due)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -324,48 +288,36 @@ export default function SignOnSignOffReport() {
             )}
 
             {hasRecords && reportType === "allSignOn" && (
-              <table className="w-full text-left border-collapse text-sm min-w-[800px]">
+              <table className="w-full text-left border-collapse text-sm min-w-[800px]" style={{ color: "var(--text-primary)" }}>
                 <thead>
-                  <tr className="bg-indigo-600 text-white">
-                    <th className="px-3 py-2 font-semibold">Crew ID</th>
-                    <th className="px-3 py-2 font-semibold">Crew Name</th>
-                    <th className="px-3 py-2 font-semibold">Rank</th>
-                    <th className="px-3 py-2 font-semibold">DOB</th>
-                    <th className="px-3 py-2 font-semibold">Current Ship</th>
-                    <th className="px-3 py-2 font-semibold">Status</th>
-                    <th className="px-3 py-2 font-semibold">Contract Start</th>
-                    <th className="px-3 py-2 font-semibold">Sign On Date</th>
-                    <th className="px-3 py-2 font-semibold">Sign Off Due</th>
-                    <th className="px-3 py-2 font-semibold">Days Remaining</th>
-                    <th className="px-3 py-2 font-semibold">Remarks</th>
+                  <tr style={{ background: "linear-gradient(180deg, var(--marine-700), var(--marine-800))", color: "#fff" }}>
+                    {["Crew ID", "Crew Name", "Rank", "DOB", "Current Ship", "Status", "Contract Start", "Sign On Date", "Sign Off Due", "Days Remaining"].map((h) => (
+                      <th key={h} className="px-3 py-2 font-semibold">{h}</th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
                   {records.map((r) => {
-                    const toTime = filters.to_date ? new Date(filters.to_date).getTime() : null;
-                    const signOnTime = r.sign_on_date ? new Date(r.sign_on_date).getTime() : null;
-                    const signOffDueTime = r.sign_off_due ? new Date(r.sign_off_due).getTime() : null;
+                    const signOnTime = toEpochMillis(r.sign_on_date);
+                    const signOffDueTime = toEpochMillis(r.sign_off_due);
                     let statusLabel = "—";
-                    if (from && to && toTime && signOnTime && signOffDueTime) {
-                      statusLabel = toTime >= signOnTime && toTime <= signOffDueTime ? "ON-BOARD" : "ON-LEAVE";
+                    if (signOnTime && signOffDueTime) {
+                      const startOfDay = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+                      const cmp = startOfDay(toEpochMillis(to) ?? Date.now());
+                      statusLabel = cmp >= startOfDay(signOnTime) && cmp <= startOfDay(signOffDueTime) ? "ON-BOARD" : "ON-LEAVE";
                     }
                     return (
-                      <tr key={r.doc_id || r.candidate_id} className="border-b border-slate-100 hover:bg-slate-50/80">
-                        <td className="px-3 py-2">
-                          <Link to={`/admin/candidates/${r.candidate_id}`} className="text-indigo-600 hover:underline font-medium">
-                            {cap(r.candidate_id)}
-                          </Link>
-                        </td>
+                      <tr key={r.doc_id || r.candidate_id} className="border-b hover:bg-[var(--bg-hover)]" style={{ borderColor: "var(--border-primary)" }}>
+                        <td className="px-3 py-2"><Link to={`/admin/candidates/${r.candidate_id}`} className="hover:underline font-medium" style={{ color: "var(--accent)" }}>{cap(r.candidate_id)}</Link></td>
                         <td className="px-3 py-2">{cap(r.given_name)} {cap(r.surname)}</td>
                         <td className="px-3 py-2">{cap(r.rank_name)}</td>
-                        <td className="px-3 py-2">{formatDate(r.date_of_birth)}</td>
+                        <td className="px-3 py-2 cell-nowrap">{formatDate(r.date_of_birth)}</td>
                         <td className="px-3 py-2">{cap(r.vessel_name)}</td>
                         <td className="px-3 py-2">{statusLabel}</td>
-                        <td className="px-3 py-2">{formatDate(r.contract_start_date)}</td>
-                        <td className="px-3 py-2">{formatDate(r.sign_on_date)}</td>
-                        <td className="px-3 py-2">{formatDate(r.sign_off_due)}</td>
-                        <td className="px-3 py-2">{daysRemaining(r.sign_off_due)}</td>
-                        <td className="px-3 py-2">{cap(r.remark)}</td>
+                        <td className="px-3 py-2 cell-nowrap">{formatDate(r.contract_start_date)}</td>
+                        <td className="px-3 py-2 cell-nowrap">{formatDate(r.sign_on_date)}</td>
+                        <td className="px-3 py-2 cell-nowrap">{formatDate(r.sign_off_due)}</td>
+                        <td className="px-3 py-2 cell-nowrap">{daysRemaining(r.sign_off_due)}</td>
                       </tr>
                     );
                   })}
@@ -374,40 +326,27 @@ export default function SignOnSignOffReport() {
             )}
 
             {hasRecords && reportType === "signOff" && (
-              <table className="w-full text-left border-collapse text-sm min-w-[800px]">
+              <table className="w-full text-left border-collapse text-sm min-w-[800px]" style={{ color: "var(--text-primary)" }}>
                 <thead>
-                  <tr className="bg-indigo-600 text-white">
-                    <th className="px-3 py-2 font-semibold">Crew ID</th>
-                    <th className="px-3 py-2 font-semibold">Crew Name</th>
-                    <th className="px-3 py-2 font-semibold">Rank</th>
-                    <th className="px-3 py-2 font-semibold">DOB</th>
-                    <th className="px-3 py-2 font-semibold">Current/Previous Ship</th>
-                    <th className="px-3 py-2 font-semibold">Status</th>
-                    <th className="px-3 py-2 font-semibold">Sign On Date</th>
-                    <th className="px-3 py-2 font-semibold">Sign Off Date</th>
-                    <th className="px-3 py-2 font-semibold">Contract Days</th>
-                    <th className="px-3 py-2 font-semibold">Sign Off Reason</th>
-                    <th className="px-3 py-2 font-semibold">Availability</th>
+                  <tr style={{ background: "linear-gradient(180deg, var(--marine-700), var(--marine-800))", color: "#fff" }}>
+                    {["Crew ID", "Crew Name", "Rank", "DOB", "Current/Previous Ship", "Status", "Sign On Date", "Sign Off Date", "Contract Days", "Sign Off Reason"].map((h) => (
+                      <th key={h} className="px-3 py-2 font-semibold">{h}</th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
                   {records.map((r) => (
-                    <tr key={r.doc_id || r.candidate_id} className="border-b border-slate-100 hover:bg-slate-50/80">
-                      <td className="px-3 py-2">
-                        <Link to={`/admin/candidates/${r.candidate_id}`} className="text-indigo-600 hover:underline font-medium">
-                          {cap(r.candidate_id)}
-                        </Link>
-                      </td>
+                    <tr key={r.doc_id || r.candidate_id} className="border-b hover:bg-[var(--bg-hover)]" style={{ borderColor: "var(--border-primary)" }}>
+                      <td className="px-3 py-2"><Link to={`/admin/candidates/${r.candidate_id}`} className="hover:underline font-medium" style={{ color: "var(--accent)" }}>{cap(r.candidate_id)}</Link></td>
                       <td className="px-3 py-2">{cap(r.given_name)} {cap(r.surname)}</td>
                       <td className="px-3 py-2">{cap(r.rank_name)}</td>
-                      <td className="px-3 py-2">{formatDate(r.date_of_birth)}</td>
+                      <td className="px-3 py-2 cell-nowrap">{formatDate(r.date_of_birth)}</td>
                       <td className="px-3 py-2">{cap(r.vessel_name)}</td>
                       <td className="px-3 py-2">ON-LEAVE</td>
-                      <td className="px-3 py-2">{formatDate(r.sign_on_date)}</td>
-                      <td className="px-3 py-2">{formatDate(r.sign_off_date)}</td>
-                      <td className="px-3 py-2">{daysRemaining(r.sign_off_due)}</td>
+                      <td className="px-3 py-2 cell-nowrap">{formatDate(r.sign_on_date)}</td>
+                      <td className="px-3 py-2 cell-nowrap">{formatDate(r.sign_off_date)}</td>
+                      <td className="px-3 py-2 cell-nowrap">{daysRemaining(r.sign_off_due)}</td>
                       <td className="px-3 py-2">{cap(r.sign_off_reason)}</td>
-                      <td className="px-3 py-2">{formatDate(r.availability_date)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -417,9 +356,7 @@ export default function SignOnSignOffReport() {
         </div>
       )}
 
-      {loadingOptions && (
-        <div className="text-center py-8 text-slate-500 text-sm">Loading filter options…</div>
-      )}
+      {loadingOptions && <div className="text-center py-8 text-sm" style={{ color: "var(--text-tertiary)" }}>Loading filter options…</div>}
     </div>
   );
 }

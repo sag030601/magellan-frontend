@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { apiFetch } from "../lib/api";
 
 function AdminPanel() {
   const [candidates, setCandidates] = useState([]);
@@ -8,7 +9,7 @@ function AdminPanel() {
   useEffect(() => {
     const fetchCandidates = async () => {
       try {
-        const response = await fetch(`${VITE_API_URL}/api/candidates/all`);
+        const response = await apiFetch("/api/candidates/all");
         if (!response.ok) throw new Error("Failed to fetch candidates");
         const data = await response.json();
         setCandidates(data.candidates || []);
@@ -100,12 +101,14 @@ function AdminPanel() {
                           </span>
                         </td>
                         <td className="px-6 py-4 text-sm">
-                          <button className="text-teal-600 hover:text-teal-800 font-medium mr-3">
-                            Edit
-                          </button>
-                          <button className="text-red-600 hover:text-red-800 font-medium">
-                            Delete
-                          </button>
+                          <div className="action-icons-toolbar justify-content-center">
+                            <button type="button" className="action-icon-btn action-icon-edit" title="Edit">
+                              <i className="fas fa-pen" />
+                            </button>
+                            <button type="button" className="action-icon-btn action-icon-delete" title="Delete">
+                              <i className="fas fa-trash" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))

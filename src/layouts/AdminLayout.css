@@ -1,4 +1,4 @@
-/* Admin layout – Blade-style structure */
+/* Admin layout */
 
 .admin-wrapper {
   --sidebar-width: 16rem;
@@ -12,6 +12,8 @@
   bottom: 0;
   z-index: 40;
   width: var(--sidebar-width);
+  height: 100vh;
+  overflow: hidden;
   transition: width 0.3s ease, transform 0.3s ease;
 }
 
@@ -19,6 +21,8 @@
   margin-left: var(--sidebar-width);
   transition: margin-left 0.3s ease;
   min-height: 100vh;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 .admin-wrapper.sidebar-collapsed .admin-sidebar-wrap {
@@ -30,18 +34,15 @@
 }
 
 .admin-main {
-  background: linear-gradient(to bottom right, #f8fafc, #f0fdfa);
+  background: var(--bg-main);
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
-.admin-footer {
-  flex-shrink: 0;
-}
+.admin-footer { flex-shrink: 0; }
 
-.admin-scroll-top {
-  transition: opacity 0.2s ease;
-}
+.admin-scroll-top { transition: opacity 0.2s ease; }
 
-/* Mobile: sidebar as overlay */
 @media (max-width: 768px) {
   .admin-sidebar-wrap {
     transform: translateX(-100%);
@@ -53,9 +54,7 @@
     box-shadow: 4px 0 20px rgba(0, 0, 0, 0.15);
   }
 
-  .admin-content-wrapper {
-    margin-left: 0;
-  }
+  .admin-content-wrapper { margin-left: 0; }
 
   .admin-sidebar-overlay {
     position: fixed;

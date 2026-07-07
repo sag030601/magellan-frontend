@@ -1,0 +1,66 @@
+/* Vessel list: fit viewport without horizontal scroll; square table chrome */
+.vessels-page .vessels-table-wrap {
+  overflow-x: hidden;
+  width: 100%;
+  max-width: 100%;
+  border-radius: 0;
+}
+
+.vessels-page .vessels-table {
+  table-layout: fixed;
+  width: 100%;
+  max-width: 100%;
+}
+
+.vessels-page .vessels-table th,
+.vessels-page .vessels-table td {
+  padding: 0.35rem 0.25rem;
+  font-size: 0.65rem;
+  line-height: 1.25;
+  vertical-align: middle;
+}
+
+/* Data cells: single-line ellipsis; full value on title attribute */
+.vessels-page .vessels-table td:not(.vessels-col-action) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vessels-page .vessels-table th:not(.vessels-col-action) {
+  font-size: 0.6rem;
+  letter-spacing: 0.02em;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: normal;
+  hyphens: none;
+}
+
+.vessels-page .vessels-table td.cell-nowrap {
+  white-space: nowrap;
+}
+
+/* Three 22px icon buttons + gaps — keep fully visible */
+.vessels-page .vessels-table .vessels-col-action {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  padding-left: 0.125rem;
+  padding-right: 0.125rem;
+}
+
+.vessels-page .vessels-table .vessels-col-action .action-icons-toolbar {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.vessels-page .vessels-table .vessels-col-action .action-icon-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+}
+
+.vessels-page .vessels-table .vessels-col-action .action-icon-btn i {
+  font-size: 10px;
+}
