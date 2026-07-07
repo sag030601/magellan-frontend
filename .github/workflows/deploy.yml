@@ -36,28 +36,49 @@ jobs:
           fi
           npm run build
 
-      - name: Start SSH agent
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
-
-      - name: Add EC2 host key
-        run: ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - name: Install SSH key
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          SSH_KEY_B64: ${{ secrets.EC2_SSH_KEY_B64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          if [ -n "${SSH_KEY_B64:-}" ]; then
+            echo "$SSH_KEY_B64" | tr -d '[:space:]' | base64 -d > ~/.ssh/deploy_key
+          elif [ -n "${SSH_KEY:-}" ]; then
+            printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
+          else
+            echo "ERROR: Set EC2_SSH_KEY or EC2_SSH_KEY_B64 in repository secrets."
+            exit 1
+          fi
+          chmod 600 ~/.ssh/deploy_key
+          if ! ssh-keygen -y -f ~/.ssh/deploy_key >/dev/null 2>&1; then
+            echo "ERROR: Invalid SSH private key in GitHub secret."
+            echo "Re-create EC2_SSH_KEY_B64 on your Mac:"
+            echo "  base64 < ~/.ssh/magellan_deploy | tr -d '[:space:]' | pbcopy"
+            exit 1
+          fi
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Test SSH connection
         run: |
-          ssh -o BatchMode=yes -o ConnectTimeout=15 "${EC2_USER}@${EC2_HOST}" "echo SSH OK && whoami"
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15 \
+            "${EC2_USER}@${EC2_HOST}" "echo SSH OK && whoami"
 
       - name: Sync build to EC2
         run: |
           TARGET="${DEPLOY_PATH}/client"
-          ssh "${EC2_USER}@${EC2_HOST}" "mkdir -p '${TARGET}'"
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "${EC2_USER}@${EC2_HOST}" "mkdir -p '${TARGET}'"
           rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new" \
             ./dist/ "${EC2_USER}@${EC2_HOST}:${TARGET}/"
 
       - name: Restart web container
         run: |
-          ssh "${EC2_USER}@${EC2_HOST}" "DEPLOY_PATH='${DEPLOY_PATH}' bash -s" <<'REMOTE'
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "${EC2_USER}@${EC2_HOST}" "DEPLOY_PATH='${DEPLOY_PATH}' bash -s" <<'REMOTE'
           set -euo pipefail
           cd "$DEPLOY_PATH"
           if docker compose version >/dev/null 2>&1; then
