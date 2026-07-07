@@ -12,6 +12,11 @@ concurrency:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    env:
+      EC2_HOST: ${{ secrets.EC2_HOST }}
+      EC2_USER: ${{ secrets.EC2_USER }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/home/ec2-user/app' }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,7 +24,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: package-lock.json
 
@@ -31,33 +36,39 @@ jobs:
           fi
           npm run build
 
-      - name: Configure SSH
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Add EC2 host key
+        run: ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Test SSH connection
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh -o BatchMode=yes -o ConnectTimeout=15 "${EC2_USER}@${EC2_HOST}" "echo SSH OK && whoami"
 
       - name: Sync build to EC2
-        env:
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
-          APP_ROOT="${DEPLOY_PATH:-/home/ec2-user/app}"
-          TARGET="${APP_ROOT}/client"
+          TARGET="${DEPLOY_PATH}/client"
+          ssh "${EC2_USER}@${EC2_HOST}" "mkdir -p '${TARGET}'"
           rsync -avz --delete \
-            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new" \
-            ./dist/ "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:${TARGET}/"
+            ./dist/ "${EC2_USER}@${EC2_HOST}:${TARGET}/"
 
       - name: Restart web container
-        env:
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
-          APP_ROOT="${DEPLOY_PATH:-/home/ec2-user/app}"
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
-            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" <<EOF
-          set -e
-          cd "${APP_ROOT}"
-          docker compose restart web
+          ssh "${EC2_USER}@${EC2_HOST}" "DEPLOY_PATH='${DEPLOY_PATH}' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+          if docker compose version >/dev/null 2>&1; then
+            COMPOSE="docker compose"
+          elif command -v docker-compose >/dev/null 2>&1; then
+            COMPOSE="docker-compose"
+          else
+            echo "ERROR: docker compose not found"
+            exit 1
+          fi
+          $COMPOSE restart web
           sleep 2
-          docker compose ps web
-          EOF
+          $COMPOSE ps web
+          REMOTE
