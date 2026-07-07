@@ -28,68 +28,54 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
-      - name: Install and build
+      - name: Build
         run: |
           npm ci
-          if [ -n "${{ secrets.VITE_API_URL }}" ]; then
-            echo "VITE_API_URL=${{ secrets.VITE_API_URL }}" >> .env.production.local
-          fi
           npm run build
+          test -f dist/index.html
 
-      - name: Install SSH key
+      - name: Load SSH key
         env:
-          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
           SSH_KEY_B64: ${{ secrets.EC2_SSH_KEY_B64 }}
         run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          if [ -n "${SSH_KEY_B64:-}" ]; then
-            echo "$SSH_KEY_B64" | tr -d '[:space:]' | base64 -d > ~/.ssh/deploy_key
-          elif [ -n "${SSH_KEY:-}" ]; then
-            printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
-          else
-            echo "ERROR: Set EC2_SSH_KEY or EC2_SSH_KEY_B64 in repository secrets."
+          set -e
+          if [ -z "${SSH_KEY_B64:-}" ]; then
+            echo "::error::Missing EC2_SSH_KEY_B64 secret. On Mac: base64 < ~/.ssh/magellan_deploy | tr -d '[:space:]' | pbcopy"
             exit 1
           fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "$SSH_KEY_B64" | tr -d '[:space:]' | base64 -d > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          if ! ssh-keygen -y -f ~/.ssh/deploy_key >/dev/null 2>&1; then
-            echo "ERROR: Invalid SSH private key in GitHub secret."
-            echo "Re-create EC2_SSH_KEY_B64 on your Mac:"
-            echo "  base64 < ~/.ssh/magellan_deploy | tr -d '[:space:]' | pbcopy"
-            exit 1
-          fi
+          ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Test SSH connection
+      - name: Test SSH
         run: |
-          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=15 \
-            "${EC2_USER}@${EC2_HOST}" "echo SSH OK && whoami"
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=20 \
+            "${EC2_USER}@${EC2_HOST}" "echo SSH_OK"
 
-      - name: Sync build to EC2
+      - name: Sync frontend build (safe)
         run: |
+          set -e
           TARGET="${DEPLOY_PATH}/client"
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
-            "${EC2_USER}@${EC2_HOST}" "mkdir -p '${TARGET}'"
-          rsync -avz --delete \
+          ssh -i ~/.ssh/deploy_key "${EC2_USER}@${EC2_HOST}" "mkdir -p '${TARGET}'"
+          # No --delete: only add/update built files, do not wipe the client folder
+          rsync -avz \
             -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new" \
             ./dist/ "${EC2_USER}@${EC2_HOST}:${TARGET}/"
 
       - name: Restart web container
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
-            "${EC2_USER}@${EC2_HOST}" "DEPLOY_PATH='${DEPLOY_PATH}' bash -s" <<'REMOTE'
-          set -euo pipefail
+          ssh -i ~/.ssh/deploy_key "${EC2_USER}@${EC2_HOST}" \
+            "DEPLOY_PATH='${DEPLOY_PATH}' bash -s" <<'EOF'
+          set -e
           cd "$DEPLOY_PATH"
+          test -f docker-compose.yml
           if docker compose version >/dev/null 2>&1; then
-            COMPOSE="docker compose"
-          elif command -v docker-compose >/dev/null 2>&1; then
-            COMPOSE="docker-compose"
+            docker compose up -d web
+            docker compose ps web
           else
-            echo "ERROR: docker compose not found"
-            exit 1
+            docker-compose up -d web
+            docker-compose ps web
           fi
-          $COMPOSE restart web
-          sleep 2
-          $COMPOSE ps web
-          REMOTE
+          EOF
