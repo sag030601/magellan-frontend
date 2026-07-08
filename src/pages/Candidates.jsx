@@ -292,11 +292,11 @@ function SelectField({ label, placeholder, options, value, onChange }) {
   );
 }
 
-function InputField({ label, placeholder, type = "text", value, onChange }) {
+function InputField({ label, placeholder, type = "text", value, onChange, required = false }) {
   return (
     <div className={FIELD_WRAP}>
-      <label>{label}</label>
-      <input type={type} className={INPUT_CLS} placeholder={placeholder} value={value} onChange={onChange} />
+      <label>{label}{required ? " *" : ""}</label>
+      <input type={type} className={INPUT_CLS} placeholder={placeholder} value={value} onChange={onChange} required={required} />
     </div>
   );
 }
@@ -432,6 +432,15 @@ export default function Candidates() {
     const surname = addForm.surname.trim();
     if (!given || !surname) {
       setAddError("Given name and surname are required.");
+      return;
+    }
+    const ymd = /^\d{4}-\d{2}-\d{2}$/;
+    if (addForm.passport_number.trim() && !ymd.test(String(addForm.passport_expiry_date || "").trim())) {
+      setAddError("Passport expiry date is required when passport number is entered.");
+      return;
+    }
+    if (addForm.cdc_number.trim() && !ymd.test(String(addForm.cdc_expiry_date || "").trim())) {
+      setAddError("CDC expiry date is required when CDC number is entered.");
       return;
     }
     setAddSaving(true);
@@ -683,6 +692,7 @@ export default function Candidates() {
                 type="date"
                 value={addForm.passport_expiry_date}
                 onChange={(e) => setAddField("passport_expiry_date", e.target.value)}
+                required={Boolean(addForm.passport_number.trim())}
               />
               <InputField
                 label="CDC number"
@@ -703,6 +713,7 @@ export default function Candidates() {
                 type="date"
                 value={addForm.cdc_expiry_date}
                 onChange={(e) => setAddField("cdc_expiry_date", e.target.value)}
+                required={Boolean(addForm.cdc_number.trim())}
               />
               <InputField
                 label="Indos number"

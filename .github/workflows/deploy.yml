@@ -37,17 +37,22 @@ jobs:
       - name: Load SSH key
         env:
           SSH_KEY_B64: ${{ secrets.EC2_SSH_KEY_B64 }}
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
         run: |
           set -e
-          if [ -z "${SSH_KEY_B64:-}" ]; then
-            echo "::error::Missing EC2_SSH_KEY_B64 secret. On Mac: base64 < ~/.ssh/magellan_deploy | tr -d '[:space:]' | pbcopy"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          if [ -n "${SSH_KEY_B64:-}" ]; then
+            echo "$SSH_KEY_B64" | tr -d '[:space:]' | base64 -d > ~/.ssh/deploy_key
+          elif [ -n "${SSH_KEY:-}" ]; then
+            printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
+          else
+            echo "::error::Add EC2_SSH_KEY_B64 secret (recommended) or EC2_SSH_KEY"
             exit 1
           fi
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          echo "$SSH_KEY_B64" | tr -d '[:space:]' | base64 -d > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          echo "SSH key loaded OK"
 
       - name: Test SSH
         run: |
@@ -59,18 +64,17 @@ jobs:
           set -e
           TARGET="${DEPLOY_PATH}/client"
           ssh -i ~/.ssh/deploy_key "${EC2_USER}@${EC2_HOST}" "mkdir -p '${TARGET}'"
-          # No --delete: only add/update built files, do not wipe the client folder
           rsync -avz \
             -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new" \
             ./dist/ "${EC2_USER}@${EC2_HOST}:${TARGET}/"
+          echo "Sync complete"
 
-      - name: Restart web container
+      - name: Restart web
         run: |
-          ssh -i ~/.ssh/deploy_key "${EC2_USER}@${EC2_HOST}" \
-            "DEPLOY_PATH='${DEPLOY_PATH}' bash -s" <<'EOF'
+          ssh -i ~/.ssh/deploy_key "${EC2_USER}@${EC2_HOST}" bash -s <<EOF
           set -e
-          cd "$DEPLOY_PATH"
-          test -f docker-compose.yml
+          APP='${DEPLOY_PATH}'
+          cd "\$APP"
           if docker compose version >/dev/null 2>&1; then
             docker compose up -d web
             docker compose ps web

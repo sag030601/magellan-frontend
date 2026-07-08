@@ -10,6 +10,13 @@ import "./CandidateDetails.css";
 /** Passport / CDC / Visa / STCW rows in `seafarers_docs` — STCW tab lists all other document types */
 const MAIN_SEAFARER_DOC_NAMES = ["Passport", "Seaman Book", "VISA Copy"];
 
+function requireCompleteDate(val, label) {
+  if (!val || !/^\d{4}-\d{2}-\d{2}$/.test(String(val).trim())) {
+    return `${label} is required.`;
+  }
+  return null;
+}
+
 /** `licences.type` values — parity with Laravel `candidate_edit` licence modal */
 const LICENCE_TYPE_OPTIONS = [
   { value: "certificate_of_competency", label: "Certificate of Competency" },
@@ -1481,6 +1488,16 @@ const CandidateDetails = () => {
   // Submit basic details form
   const handleBasicDetailsSubmit = async (e) => {
     e.preventDefault();
+    const passportExpiryErr = requireCompleteDate(formData.passport_expiry_date, "Passport expiry date");
+    if (passportExpiryErr) {
+      alert(passportExpiryErr);
+      return;
+    }
+    const cdcExpiryErr = requireCompleteDate(formData.cdc_expiry_date, "CDC expiry date");
+    if (cdcExpiryErr) {
+      alert(cdcExpiryErr);
+      return;
+    }
     try {
       const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
       // Only send fields that the backend whitelists for update.
@@ -3554,7 +3571,7 @@ const CandidateDetails = () => {
                     />
                   </div>
                   <div className="form-group">
-                    <label>Sign Off Due Date</label>
+                    <label>Contract Expiry (Sign Off Due) *</label>
                     <input
                       type="date"
                       name="sign_off_due"
@@ -3791,13 +3808,14 @@ const CandidateDetails = () => {
                   </div>
 
                   <div className="form-group">
-                    <label>Contract Completion Date</label>
+                    <label>Contract Completion Date *</label>
                     <input
                       type="date"
                       name="contract_completion_date"
                       className="form-control"
                       value={postSignOffRecordForm.contract_completion_date}
                       onChange={handlePostSignOffRecordInputChange}
+                      required
                     />
                   </div>
 
@@ -4116,8 +4134,8 @@ const BasicDetailsForm = ({
             <input type="date" name="passport_issue_date" className="form-control" value={toDateInputValue(formData.passport_issue_date)} onChange={handleInputChange} />
           </div>
           <div className="form-group">
-            <label>PASSPORT EXPIRY</label>
-            <input type="date" name="passport_expiry_date" className="form-control" value={toDateInputValue(formData.passport_expiry_date)} onChange={handleInputChange} />
+            <label>PASSPORT EXPIRY *</label>
+            <input type="date" name="passport_expiry_date" className="form-control" value={toDateInputValue(formData.passport_expiry_date)} onChange={handleInputChange} required />
           </div>
           <div className="form-group">
             <label>CDC NUMBER</label>
@@ -4131,8 +4149,8 @@ const BasicDetailsForm = ({
             <input type="date" name="cdc_issue_date" className="form-control" value={toDateInputValue(formData.cdc_issue_date)} onChange={handleInputChange} />
           </div>
           <div className="form-group">
-            <label>CDC EXPIRY DATE</label>
-            <input type="date" name="cdc_expiry_date" className="form-control" value={toDateInputValue(formData.cdc_expiry_date)} onChange={handleInputChange} />
+            <label>CDC EXPIRY DATE *</label>
+            <input type="date" name="cdc_expiry_date" className="form-control" value={toDateInputValue(formData.cdc_expiry_date)} onChange={handleInputChange} required />
           </div>
           <div className="form-group">
             <label>INDOS NUMBER</label>
@@ -6729,6 +6747,10 @@ const SeafarersDocumentModal = ({
   const showVisaFields =
     fixedType === "VISA Copy" || editingDoc?.document_name === "VISA Copy";
 
+  const expiryRequired =
+    MAIN_SEAFARER_DOC_NAMES.includes(fixedType) ||
+    MAIN_SEAFARER_DOC_NAMES.includes(editingDoc?.document_name);
+
   const showStcwField =
     pickType ||
     (editingDoc && !MAIN_SEAFARER_DOC_NAMES.includes(editingDoc.document_name));
@@ -6761,8 +6783,16 @@ const SeafarersDocumentModal = ({
       alert("Please choose a complete issue date (year, month, and day).");
       return;
     }
-    if (!form.expiry_date || !ymd.test(String(form.expiry_date).trim())) {
+    if (expiryRequired && (!form.expiry_date || !ymd.test(String(form.expiry_date).trim()))) {
       alert("Please choose a complete expiry date (year, month, and day).");
+      return;
+    }
+    if (
+      !expiryRequired &&
+      form.expiry_date &&
+      !ymd.test(String(form.expiry_date).trim())
+    ) {
+      alert("Expiry date must be a complete date when provided.");
       return;
     }
     if (
@@ -6781,7 +6811,7 @@ const SeafarersDocumentModal = ({
       fd.append("certificate_number", form.certificate_number || "");
       fd.append("place_of_issue", form.place_of_issue || "");
       fd.append("issue_date", String(form.issue_date).trim());
-      fd.append("expiry_date", String(form.expiry_date).trim());
+      fd.append("expiry_date", form.expiry_date ? String(form.expiry_date).trim() : "");
       if (showVisaFields) {
         fd.append("visa_category", form.visa_category || "");
         fd.append("visa_entry_type", form.visa_entry_type || "");
@@ -6886,14 +6916,14 @@ const SeafarersDocumentModal = ({
             </small>
           </div>
           <div className="form-group">
-            <label>Expiry date *</label>
+            <label>Expiry date{expiryRequired ? " *" : ""}</label>
             <input
               type="date"
               name="expiry_date"
               className="form-control"
               value={form.expiry_date || ""}
               onChange={handleChange}
-              required
+              required={expiryRequired}
             />
           </div>
           {showVisaFields && (
@@ -7010,6 +7040,11 @@ const LicenseFormModal = ({
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const expiryErr = requireCompleteDate(form.expiry_date, "Expiry date");
+    if (expiryErr) {
+      alert(expiryErr);
+      return;
+    }
     setSaving(true);
     try {
       const fd = new FormData();
@@ -7116,7 +7151,7 @@ const LicenseFormModal = ({
             <input type="date" name="issue_revalidation_date" className="form-control" value={form.issue_revalidation_date || ""} onChange={handleChange} />
           </div>
           <div className="form-group">
-            <label>Expiry date</label>
+            <label>Expiry date *</label>
             <input type="date" name="expiry_date" className="form-control" value={form.expiry_date || ""} onChange={handleChange} required />
           </div>
           <div className="form-group">
