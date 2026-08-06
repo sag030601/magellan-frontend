@@ -1,83 +1,82 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
+import { fetchUsers, queryKeys } from "../hooks/queries";
 
 const EMPTY_FORM = { name: "", email: "", password: "", role: "admin" };
 
 export default function Users() {
-  const [users, setUsers] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const queryClient = useQueryClient();
+  const [formError, setFormError] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState({ ...EMPTY_FORM });
-  const [saving, setSaving] = useState(false);
 
-  const fetchUsers = async () => {
-    try {
-      const res = await apiFetch("/api/auth/users");
-      if (!res.ok) throw new Error("Failed to fetch users");
-      const data = await res.json();
-      setUsers(data.users || []);
-      setError("");
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data: users = [], isLoading: loading, error: queryError } = useQuery({
+    queryKey: queryKeys.users,
+    queryFn: fetchUsers,
+  });
 
-  useEffect(() => { fetchUsers(); }, []);
+  const saveMutation = useMutation({
+    mutationFn: async ({ editingId: eid, form: f }) => {
+      const payload = { name: f.name, email: f.email, role: f.role };
+      if (f.password) payload.password = f.password;
+      if (eid) {
+        const res = await apiFetch(`/api/auth/users/${eid}`, { method: "PUT", body: JSON.stringify(payload) });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || "Update failed"); }
+      } else {
+        if (!f.password) throw new Error("Password is required for new users");
+        payload.password = f.password;
+        const res = await apiFetch("/api/auth/users", { method: "POST", body: JSON.stringify(payload) });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || "Create failed"); }
+      }
+    },
+    onSuccess: () => {
+      setShowModal(false);
+      setFormError("");
+      queryClient.invalidateQueries({ queryKey: queryKeys.users });
+    },
+    onError: (e) => setFormError(e.message),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id) => {
+      const res = await apiFetch(`/api/auth/users/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || "Delete failed");
+      }
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.users }),
+    onError: (e) => alert(e.message),
+  });
+
+  const error = formError || queryError?.message || "";
+  const saving = saveMutation.isPending;
 
   const openAdd = () => {
     setEditingId(null);
     setForm({ ...EMPTY_FORM });
+    setFormError("");
     setShowModal(true);
   };
 
   const openEdit = (u) => {
     setEditingId(u.id);
     setForm({ name: u.name, email: u.email, password: "", role: u.role || "admin" });
+    setFormError("");
     setShowModal(true);
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
-    setSaving(true);
-    setError("");
-    try {
-      const payload = { name: form.name, email: form.email, role: form.role };
-      if (form.password) payload.password = form.password;
-
-      if (editingId) {
-        const res = await apiFetch(`/api/auth/users/${editingId}`, { method: "PUT", body: JSON.stringify(payload) });
-        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || "Update failed"); }
-      } else {
-        if (!form.password) { setError("Password is required for new users"); setSaving(false); return; }
-        payload.password = form.password;
-        const res = await apiFetch("/api/auth/users", { method: "POST", body: JSON.stringify(payload) });
-        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || "Create failed"); }
-      }
-      setShowModal(false);
-      fetchUsers();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setSaving(false);
-    }
+    setFormError("");
+    saveMutation.mutate({ editingId, form });
   };
 
-  const handleDelete = async (id, name) => {
+  const handleDelete = (id, name) => {
     if (!window.confirm(`Delete user "${name}"?`)) return;
-    try {
-      const res = await apiFetch(`/api/auth/users/${id}`, { method: "DELETE" });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(d.error || "Delete failed");
-      }
-      setUsers((prev) => prev.filter((u) => u.id !== id));
-    } catch (e) {
-      alert(e.message);
-    }
+    deleteMutation.mutate(id);
   };
 
   const fmtDate = (v) => {

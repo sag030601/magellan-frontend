@@ -63,10 +63,13 @@ jobs:
         run: |
           set -e
           TARGET="${DEPLOY_PATH}/client"
-          ssh -i ~/.ssh/deploy_key "${EC2_USER}@${EC2_HOST}" "mkdir -p '${TARGET}'"
+          ssh -i ~/.ssh/deploy_key "${EC2_USER}@${EC2_HOST}" "mkdir -p '${TARGET}' '${DEPLOY_PATH}/deploy/nginx'"
           rsync -avz \
             -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new" \
             ./dist/ "${EC2_USER}@${EC2_HOST}:${TARGET}/"
+          rsync -avz \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new" \
+            ./deploy/nginx/ "${EC2_USER}@${EC2_HOST}:${DEPLOY_PATH}/deploy/nginx/"
           echo "Sync complete"
 
       - name: Restart web
@@ -75,11 +78,28 @@ jobs:
           set -e
           APP='${DEPLOY_PATH}'
           cd "\$APP"
-          if docker compose version >/dev/null 2>&1; then
-            docker compose up -d web
-            docker compose ps web
-          else
-            docker-compose up -d web
-            docker-compose ps web
+
+          # Container name on EC2 (from docker-compose.yml: container_name: magellan-web)
+          WEB_CONTAINER='magellan-web'
+
+          if docker ps -a --format '{{.Names}}' | grep -qx "\$WEB_CONTAINER"; then
+            echo "Restarting container \$WEB_CONTAINER"
+            docker restart "\$WEB_CONTAINER"
+            sleep 2
+            docker ps --filter "name=^\$WEB_CONTAINER\$" --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+            exit 0
           fi
+
+          echo "Container \$WEB_CONTAINER not found; trying compose service 'web'"
+          if docker compose version >/dev/null 2>&1; then
+            COMPOSE='docker compose'
+          elif command -v docker-compose >/dev/null 2>&1; then
+            COMPOSE='docker-compose'
+          else
+            echo "::error::Neither container \$WEB_CONTAINER nor docker compose is available"
+            docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}" || true
+            exit 1
+          fi
+          \$COMPOSE up -d web
+          \$COMPOSE ps web
           EOF

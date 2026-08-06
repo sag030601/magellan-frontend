@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
+import { pickDocumentFile } from "../lib/uploadLimits";
+import { fetchOwner, queryKeys } from "../hooks/queries";
 
 const EMPTY = {
   registered_ship_owner_name: "",
@@ -16,59 +19,55 @@ const EMPTY = {
   agreement_type: "",
 };
 
+function ownerToForm(owner) {
+  return {
+    registered_ship_owner_name: owner.registered_ship_owner_name || "",
+    ship_owner_representative_name: owner.ship_owner_representative_name || "",
+    principle_name: owner.principle_name || "",
+    email: owner.email || "",
+    contact_number: owner.contact_number || "",
+    registered_ship_owner_address: owner.registered_ship_owner_address || "",
+    ship_owner_representative_address: owner.ship_owner_representative_address || "",
+    principle_address: owner.principle_address || "",
+    validity_type: owner.validity_type || "",
+    validity_date:
+      owner.validity_date && /^\d{4}-\d{2}-\d{2}/.test(String(owner.validity_date))
+        ? String(owner.validity_date).slice(0, 10)
+        : "",
+    agreement_type: owner.agreement_type || "",
+  };
+}
+
 export default function OwnerForm() {
   const { id: editId } = useParams();
   const isEdit = Boolean(editId && /^\d+$/.test(String(editId)));
   const [form, setForm] = useState(EMPTY);
-  const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(isEdit);
-  const [error, setError] = useState("");
+  const [formError, setFormError] = useState("");
   const [agreementFile, setAgreementFile] = useState(null);
   const [managerFile, setManagerFile] = useState(null);
   const [otherFile, setOtherFile] = useState(null);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const setField = (k, v) => setForm((p) => ({ ...p, [k]: v }));
 
-  useEffect(() => {
-    if (!isEdit) return;
-    (async () => {
-      setLoading(true);
-      setError("");
-      try {
-        const res = await apiFetch(`/api/owners/${editId}`);
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || "Failed to load owner");
-        const owner = data.owner || {};
-        setForm({
-          registered_ship_owner_name: owner.registered_ship_owner_name || "",
-          ship_owner_representative_name: owner.ship_owner_representative_name || "",
-          principle_name: owner.principle_name || "",
-          email: owner.email || "",
-          contact_number: owner.contact_number || "",
-          registered_ship_owner_address: owner.registered_ship_owner_address || "",
-          ship_owner_representative_address: owner.ship_owner_representative_address || "",
-          principle_address: owner.principle_address || "",
-          validity_type: owner.validity_type || "",
-          validity_date:
-            owner.validity_date && /^\d{4}-\d{2}-\d{2}/.test(String(owner.validity_date))
-              ? String(owner.validity_date).slice(0, 10)
-              : "",
-          agreement_type: owner.agreement_type || "",
-        });
-      } catch (err) {
-        setError(err?.message || "Failed to load owner");
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [editId, isEdit]);
+  const {
+    data: ownerData,
+    isLoading: loading,
+    error: loadError,
+  } = useQuery({
+    queryKey: queryKeys.owner(editId),
+    queryFn: () => fetchOwner(editId),
+    enabled: isEdit,
+  });
 
-  const onSubmit = async (e) => {
-    e.preventDefault();
-    setSaving(true);
-    setError("");
-    try {
+  useEffect(() => {
+    if (!ownerData) return;
+    setForm(ownerToForm(ownerData));
+  }, [ownerData]);
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
       const fd = new FormData();
       Object.entries(form).forEach(([k, v]) => fd.append(k, v ?? ""));
       if (agreementFile) fd.append("agreement_file", agreementFile);
@@ -80,12 +79,23 @@ export default function OwnerForm() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Failed to save owner");
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.owners });
+      if (isEdit) queryClient.invalidateQueries({ queryKey: queryKeys.owner(editId) });
       navigate("/admin/owner");
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
-    }
+    },
+    onError: (err) => setFormError(err.message),
+  });
+
+  const error = formError || loadError?.message || "";
+  const saving = saveMutation.isPending;
+
+  const onSubmit = (e) => {
+    e.preventDefault();
+    setFormError("");
+    saveMutation.mutate();
   };
 
   return (
@@ -96,12 +106,12 @@ export default function OwnerForm() {
         </h1>
       </div>
       {error && <div className="alert alert-danger">{error}</div>}
-      {loading && (
+      {isEdit && loading && (
         <div className="rounded-lg p-4" style={{ background: "var(--bg-card)", border: "1px solid var(--border-primary)", color: "var(--text-tertiary)" }}>
           Loading owner...
         </div>
       )}
-      {!loading && (
+      {!(isEdit && loading) && (
       <form onSubmit={onSubmit} className="rounded-lg p-4" style={{ background: "var(--bg-card)", border: "1px solid var(--border-primary)" }}>
         <div className="form-row">
           <div className="form-group">
@@ -150,11 +160,11 @@ export default function OwnerForm() {
           </div>
           <div className="form-group">
             <label>Agreement (PDF)</label>
-            <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setAgreementFile(e.target.files?.[0] || null)} />
+            <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setAgreementFile(pickDocumentFile(e))} />
           </div>
           <div className="form-group">
             <label>Supported by Manning / Manager Chain (PDF)</label>
-            <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setManagerFile(e.target.files?.[0] || null)} />
+            <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setManagerFile(pickDocumentFile(e))} />
           </div>
           <div className="form-group">
             <label>Other document (PDF or passport photo JPEG/PNG)</label>
@@ -162,7 +172,7 @@ export default function OwnerForm() {
               className="form-control"
               type="file"
               accept=".pdf,application/pdf,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
-              onChange={(e) => setOtherFile(e.target.files?.[0] || null)}
+              onChange={(e) => setOtherFile(pickDocumentFile(e))}
             />
           </div>
         </div>

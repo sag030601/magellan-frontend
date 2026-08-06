@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
 import { documentHref } from "../lib/documentUrl";
+import { fetchOwners, queryKeys } from "../hooks/queries";
 
 function formatDate(val) {
   if (!val) return "—";
@@ -34,39 +35,27 @@ function DocLink({ path, label = "Download" }) {
 }
 
 export default function Owners() {
-  const [owners, setOwners] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const queryClient = useQueryClient();
 
-  const fetchOwners = async () => {
-    try {
-      const res = await apiFetch("/api/owners");
-      if (!res.ok) throw new Error("Failed to fetch owners");
-      const data = await res.json();
-      setOwners(data.owners || []);
-      setError(null);
-    } catch (err) {
-      setError(err.message);
-      setOwners([]);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data: owners = [], isLoading: loading, error: queryError } = useQuery({
+    queryKey: queryKeys.owners,
+    queryFn: fetchOwners,
+  });
+  const error = queryError?.message || null;
 
-  useEffect(() => {
-    fetchOwners();
-  }, []);
-
-  const handleDelete = async (id) => {
-    if (!window.confirm("Delete this owner?")) return;
-    try {
+  const deleteMutation = useMutation({
+    mutationFn: async (id) => {
       const res = await apiFetch(`/api/owners/${id}`, { method: "DELETE" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Delete failed");
-      await fetchOwners();
-    } catch (err) {
-      window.alert(err?.message || "Delete failed");
-    }
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.owners }),
+    onError: (err) => window.alert(err?.message || "Delete failed"),
+  });
+
+  const handleDelete = (id) => {
+    if (!window.confirm("Delete this owner?")) return;
+    deleteMutation.mutate(id);
   };
 
   return (

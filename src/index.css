@@ -390,6 +390,90 @@ select.form-control { cursor: pointer; }
 .action-icon-view:hover,
 .action-icon-docs:hover { color: var(--teal-600); }
 
+/* ── Record audit tooltip (portaled to body, anchored to action toolbars) ── */
+
+.record-audit-tooltip {
+  position: fixed;
+  z-index: 3000;
+  width: 240px;
+  padding: 0.55rem 0.65rem 0.6rem;
+  text-align: left;
+  font-size: 0.6875rem;
+  line-height: 1.35;
+  font-weight: 500;
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+  pointer-events: none;
+  white-space: normal;
+  animation: record-audit-tooltip-in 0.12s ease-out;
+}
+
+.record-audit-tooltip.is-top {
+  transform: translate(-50%, -100%);
+}
+
+.record-audit-tooltip.is-bottom {
+  transform: translate(-50%, 0);
+}
+
+@keyframes record-audit-tooltip-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.record-audit-tooltip-title {
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: 0.4rem;
+}
+
+.record-audit-tooltip-row {
+  display: grid;
+  grid-template-columns: 3.4rem minmax(0, 1fr);
+  gap: 0.15rem 0.45rem;
+}
+
+.record-audit-tooltip-row + .record-audit-tooltip-row {
+  margin-top: 0.4rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--border-primary);
+}
+
+.record-audit-tooltip-label {
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  padding-top: 0.1rem;
+}
+
+.record-audit-tooltip-value {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  min-width: 0;
+}
+
+.record-audit-tooltip-when {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.record-audit-tooltip-by {
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Layout helpers ──────────────────────────────────────────────────────── */
 
 .d-flex { display: flex; }
@@ -828,6 +912,12 @@ select.form-control { cursor: pointer; }
   background: #e2e8f0;
   color: #334155;
   border-color: #cbd5e1;
+}
+
+.status-badge--info {
+  background: #dbeafe;
+  color: #1e40af;
+  border-color: #93c5fd;
 }
 
 .candidate-summary-header .status-badge-pill {

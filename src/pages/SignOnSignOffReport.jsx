@@ -1,8 +1,21 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { apiFetch } from "../lib/api";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { downloadReportCsv, downloadReportPdf } from "../lib/reportExport";
+import { fetchReportFilterOptions, fetchSignOnOffReport, queryKeys } from "../hooks/queries";
+import { readListFilterMemory, writeListFilterMemory } from "../lib/listFilterMemory";
 
+const FILTER_MEMORY_KEY = "sign-on-off-report";
+const EMPTY_FILTERS = {
+  employer_principal: "",
+  vessel_name: "",
+  rank: "",
+  status: "",
+  nationality: "",
+  vessel_type: "",
+  from_date: "",
+  to_date: "",
+};
 function formatDate(val) {
   if (!val) return "—";
   const d = typeof val === "number" ? new Date(val * 1000) : new Date(val);
@@ -63,15 +76,9 @@ function buildExportTable(reportType, records, to) {
     return {
       headers: ["Crew ID", "Crew Name", "Rank", "DOB", "Current Ship", "Status", "Contract Start", "Sign On Date", "Sign Off Due", "Days Remaining"],
       rows: records.map((r) => {
-        const onMs = toEpochMillis(r.sign_on_date);
-        const offMs = toEpochMillis(r.sign_off_due);
-        let status = "—";
-        if (onMs && offMs) {
-          const now = Date.now();
-          const startOfDay = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
-          const cmp = startOfDay(toEpochMillis(to) ?? now);
-          status = cmp >= startOfDay(onMs) && cmp <= startOfDay(offMs) ? "ON-BOARD" : "ON-LEAVE";
-        }
+        const status = r.availability_status_name
+          ? String(r.availability_status_name).toUpperCase()
+          : "—";
         return [r.candidate_id, `${cap(r.given_name)} ${cap(r.surname)}`, cap(r.rank_name), formatDate(r.date_of_birth), cap(r.vessel_name), status, formatDate(r.contract_start_date), formatDate(r.sign_on_date), formatDate(r.sign_off_due), daysRemaining(r.sign_off_due)];
       }),
       baseName: `all-sign-on-report-${today}`,
@@ -81,7 +88,8 @@ function buildExportTable(reportType, records, to) {
   return {
     headers: ["Crew ID", "Crew Name", "Rank", "DOB", "Current/Previous Ship", "Status", "Sign On Date", "Sign Off Date", "Contract Days", "Sign Off Reason"],
     rows: records.map((r) => [
-      r.candidate_id, `${cap(r.given_name)} ${cap(r.surname)}`, cap(r.rank_name), formatDate(r.date_of_birth), cap(r.vessel_name), "ON-LEAVE",
+      r.candidate_id, `${cap(r.given_name)} ${cap(r.surname)}`, cap(r.rank_name), formatDate(r.date_of_birth), cap(r.vessel_name),
+      r.availability_status_name ? String(r.availability_status_name).toUpperCase() : "ON-LEAVE",
       formatDate(r.sign_on_date), formatDate(r.sign_off_date), daysRemaining(r.sign_off_due), cap(r.sign_off_reason),
     ]),
     baseName: `sign-off-report-${today}`,
@@ -89,47 +97,43 @@ function buildExportTable(reportType, records, to) {
 }
 
 export default function SignOnSignOffReport() {
-  const [principals, setPrincipals] = useState([]);
-  const [ranks, setRanks] = useState([]);
-  const [vesselNames, setVesselNames] = useState([]);
-  const [vesselTypes, setVesselTypes] = useState([]);
-  const [countries, setCountries] = useState([]);
-  const [loadingOptions, setLoadingOptions] = useState(true);
-  const [loadingReport, setLoadingReport] = useState(false);
-  const [error, setError] = useState(null);
-  const [filters, setFilters] = useState({ employer_principal: "", vessel_name: "", rank: "", status: "", nationality: "", vessel_type: "", from_date: "", to_date: "" });
-  const [result, setResult] = useState(null);
+  const saved = readListFilterMemory(FILTER_MEMORY_KEY);
+  const [formError, setFormError] = useState(null);
+  const [filters, setFilters] = useState(() => ({ ...EMPTY_FILTERS, ...(saved?.filters || {}) }));
   const [exportingPdf, setExportingPdf] = useState(false);
 
   useEffect(() => {
-    apiFetch("/api/reports/filter-options")
-      .then((r) => r.ok ? r.json() : Promise.reject("Failed to load filter options"))
-      .then((d) => { setPrincipals(d.principals || []); setVesselNames(d.vesselNames || []); setRanks(d.ranks || []); setCountries(d.countries || []); setVesselTypes(d.vesselTypes || []); })
-      .catch((e) => setError(typeof e === "string" ? e : e.message))
-      .finally(() => setLoadingOptions(false));
-  }, []);
+    writeListFilterMemory(FILTER_MEMORY_KEY, { filters });
+  }, [filters]);
+
+  const { data: optsData, isLoading: loadingOptions, error: optsError } = useQuery({
+    queryKey: queryKeys.reportFilterOptions,
+    queryFn: fetchReportFilterOptions,
+    staleTime: 5 * 60 * 1000,
+  });
+  const principals = optsData?.principals || [];
+  const ranks = optsData?.ranks || [];
+  const vesselNames = optsData?.vesselNames || [];
+  const vesselTypes = optsData?.vesselTypes || [];
+  const countries = optsData?.countries || [];
+
+  const reportMutation = useMutation({
+    mutationFn: fetchSignOnOffReport,
+  });
 
   const handleChange = (e) => setFilters((prev) => ({ ...prev, [e.target.name]: e.target.value }));
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
-    if (!filters.status) { setError("Please select a status."); return; }
-    setError(null);
-    setLoadingReport(true);
-    try {
-      const params = new URLSearchParams();
-      Object.entries(filters).forEach(([k, v]) => { if (v) params.set(k, v); });
-      const res = await apiFetch(`/api/reports/sign-on-off?${params}`);
-      if (!res.ok) throw new Error("Failed to generate report");
-      setResult(await res.json());
-    } catch (err) {
-      setError(err.message);
-      setResult(null);
-    } finally {
-      setLoadingReport(false);
-    }
+    if (!filters.status) { setFormError("Please select a type."); return; }
+    setFormError(null);
+    reportMutation.reset();
+    reportMutation.mutate(filters);
   };
 
+  const result = reportMutation.data;
+  const loadingReport = reportMutation.isPending;
+  const error = formError || optsError?.message || (!result && reportMutation.error?.message) || null;
   const { records = [], reportType, from, to } = result || {};
   const hasRecords = records.length > 0;
 
@@ -191,12 +195,12 @@ export default function SignOnSignOffReport() {
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-secondary)" }}>Status <span style={{ color: "var(--danger)" }}>*</span></label>
+                <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-secondary)" }}>Types <span style={{ color: "var(--danger)" }}>*</span></label>
                 <select name="status" value={filters.status} onChange={handleChange} required className={fieldCls} style={fieldStyle}>
-                  <option value="">Select Status</option>
-                  <option value="sign-on">Signed on</option>
-                  <option value="13">Onboard with us</option>
-                  <option value="14">Signed off</option>
+                  <option value="">Select Type</option>
+                  <option value="sign-on">Signed on (history)</option>
+                  <option value="13">On-board with us</option>
+                  <option value="sign-off">Sign Off (History)</option>
                 </select>
               </div>
               <div>
@@ -265,7 +269,7 @@ export default function SignOnSignOffReport() {
                 <tbody>
                   {records.map((r) => (
                     <tr key={r.doc_id || r.candidate_id} className="border-b hover:bg-[var(--bg-hover)]" style={{ borderColor: "var(--border-primary)" }}>
-                      <td className="px-3 py-2"><Link to={`/admin/candidates/${r.candidate_id}`} className="hover:underline font-medium" style={{ color: "var(--accent)" }}>{cap(r.candidate_id)}</Link></td>
+                      <td className="px-3 py-2"><Link to={`/admin/candidates/${r.candidate_id}`} state={{ from: "reports", backTo: "/admin/report", backLabel: "Back to Reports" }} className="hover:underline font-medium" style={{ color: "var(--accent)" }}>{cap(r.candidate_id)}</Link></td>
                       <td className="px-3 py-2">{cap(r.given_name)} {cap(r.surname)}</td>
                       <td className="px-3 py-2">{cap(r.rank_name)}</td>
                       <td className="px-3 py-2">{cap(r.nationality_name)}</td>
@@ -298,17 +302,12 @@ export default function SignOnSignOffReport() {
                 </thead>
                 <tbody>
                   {records.map((r) => {
-                    const signOnTime = toEpochMillis(r.sign_on_date);
-                    const signOffDueTime = toEpochMillis(r.sign_off_due);
-                    let statusLabel = "—";
-                    if (signOnTime && signOffDueTime) {
-                      const startOfDay = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
-                      const cmp = startOfDay(toEpochMillis(to) ?? Date.now());
-                      statusLabel = cmp >= startOfDay(signOnTime) && cmp <= startOfDay(signOffDueTime) ? "ON-BOARD" : "ON-LEAVE";
-                    }
+                    const statusLabel = r.availability_status_name
+                      ? String(r.availability_status_name).toUpperCase()
+                      : "—";
                     return (
                       <tr key={r.doc_id || r.candidate_id} className="border-b hover:bg-[var(--bg-hover)]" style={{ borderColor: "var(--border-primary)" }}>
-                        <td className="px-3 py-2"><Link to={`/admin/candidates/${r.candidate_id}`} className="hover:underline font-medium" style={{ color: "var(--accent)" }}>{cap(r.candidate_id)}</Link></td>
+                        <td className="px-3 py-2"><Link to={`/admin/candidates/${r.candidate_id}`} state={{ from: "reports", backTo: "/admin/report", backLabel: "Back to Reports" }} className="hover:underline font-medium" style={{ color: "var(--accent)" }}>{cap(r.candidate_id)}</Link></td>
                         <td className="px-3 py-2">{cap(r.given_name)} {cap(r.surname)}</td>
                         <td className="px-3 py-2">{cap(r.rank_name)}</td>
                         <td className="px-3 py-2 cell-nowrap">{formatDate(r.date_of_birth)}</td>
@@ -337,12 +336,12 @@ export default function SignOnSignOffReport() {
                 <tbody>
                   {records.map((r) => (
                     <tr key={r.doc_id || r.candidate_id} className="border-b hover:bg-[var(--bg-hover)]" style={{ borderColor: "var(--border-primary)" }}>
-                      <td className="px-3 py-2"><Link to={`/admin/candidates/${r.candidate_id}`} className="hover:underline font-medium" style={{ color: "var(--accent)" }}>{cap(r.candidate_id)}</Link></td>
+                      <td className="px-3 py-2"><Link to={`/admin/candidates/${r.candidate_id}`} state={{ from: "reports", backTo: "/admin/report", backLabel: "Back to Reports" }} className="hover:underline font-medium" style={{ color: "var(--accent)" }}>{cap(r.candidate_id)}</Link></td>
                       <td className="px-3 py-2">{cap(r.given_name)} {cap(r.surname)}</td>
                       <td className="px-3 py-2">{cap(r.rank_name)}</td>
                       <td className="px-3 py-2 cell-nowrap">{formatDate(r.date_of_birth)}</td>
                       <td className="px-3 py-2">{cap(r.vessel_name)}</td>
-                      <td className="px-3 py-2">ON-LEAVE</td>
+                      <td className="px-3 py-2">{r.availability_status_name ? String(r.availability_status_name).toUpperCase() : "ON-LEAVE"}</td>
                       <td className="px-3 py-2 cell-nowrap">{formatDate(r.sign_on_date)}</td>
                       <td className="px-3 py-2 cell-nowrap">{formatDate(r.sign_off_date)}</td>
                       <td className="px-3 py-2 cell-nowrap">{daysRemaining(r.sign_off_due)}</td>

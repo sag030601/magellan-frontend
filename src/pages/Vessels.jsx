@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
 import { documentHref } from "../lib/documentUrl";
+import { fetchVessels, queryKeys } from "../hooks/queries";
 import "./Vessels.css";
 
 /** Column widths for table-layout: fixed; last column reserves space for action icons */
@@ -112,43 +114,33 @@ function DocumentsModal({ vessel, onClose }) {
 }
 
 export default function Vessels() {
-  const [vessels, setVessels] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const queryClient = useQueryClient();
   const [docModalVessel, setDocModalVessel] = useState(null);
 
-  const fetchVessels = async () => {
-    try {
-      const res = await apiFetch("/api/vessels");
-      if (!res.ok) throw new Error("Failed to fetch vessels");
-      const data = await res.json();
-      setVessels(data.vessels || []);
-      setError(null);
-    } catch (err) {
-      setError(err.message);
-      setVessels([]);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data: vessels = [], isLoading: loading, error: queryError } = useQuery({
+    queryKey: queryKeys.vessels,
+    queryFn: fetchVessels,
+  });
+  const error = queryError?.message || null;
 
-  useEffect(() => {
-    fetchVessels();
-  }, []);
-
-  const handleDelete = async (id) => {
-    if (!window.confirm("Delete this vessel? This cannot be undone.")) return;
-    try {
+  const deleteMutation = useMutation({
+    mutationFn: async (id) => {
       const res = await apiFetch(`/api/vessels/${id}`, { method: "DELETE" });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
         throw new Error(d.error || "Delete failed");
       }
+    },
+    onSuccess: () => {
       setDocModalVessel(null);
-      await fetchVessels();
-    } catch (e) {
-      window.alert(e?.message || "Delete failed");
-    }
+      queryClient.invalidateQueries({ queryKey: queryKeys.vessels });
+    },
+    onError: (e) => window.alert(e?.message || "Delete failed"),
+  });
+
+  const handleDelete = (id) => {
+    if (!window.confirm("Delete this vessel? This cannot be undone.")) return;
+    deleteMutation.mutate(id);
   };
 
   return (

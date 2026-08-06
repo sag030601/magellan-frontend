@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
+import { fetchMasterData, queryKeys } from "../hooks/queries";
 
 const PATH_MAP = {
   "/admin/country": { key: "country", title: "Country" },
@@ -16,63 +18,69 @@ const PATH_MAP = {
 
 export default function MasterData() {
   const location = useLocation();
+  const queryClient = useQueryClient();
   const page = useMemo(() => PATH_MAP[location.pathname] || { key: "global-lookups", title: "Master Data" }, [location.pathname]);
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [formError, setFormError] = useState("");
   const [name, setName] = useState("");
   const [type, setType] = useState("");
   const [editing, setEditing] = useState(null);
-  const [saving, setSaving] = useState(false);
   const [pageNo, setPageNo] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
-  const load = async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const res = await apiFetch(`/api/master-data/${page.key}`);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Failed to load");
-      setRows(Array.isArray(data.rows) ? data.rows : []);
-      setPageNo(1);
-    } catch (e) {
-      setRows([]);
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data: rows = [], isLoading: loading, error: queryError } = useQuery({
+    queryKey: queryKeys.masterData(page.key),
+    queryFn: () => fetchMasterData(page.key),
+  });
 
   useEffect(() => {
     setName("");
     setType("");
     setEditing(null);
-    load();
+    setPageNo(1);
+    setFormError("");
   }, [page.key]);
 
-  const onSave = async (e) => {
-    e.preventDefault();
-    if (!name.trim()) return;
-    setSaving(true);
-    setError("");
-    try {
-      const payload = { name: name.trim() };
-      if (page.key === "global-lookups") payload.type = type.trim();
-      const path = editing ? `/api/master-data/${page.key}/${editing.id}` : `/api/master-data/${page.key}`;
-      const method = editing ? "PUT" : "POST";
+  const saveMutation = useMutation({
+    mutationFn: async ({ editing: ed, name: n, type: t }) => {
+      const payload = { name: n.trim() };
+      if (page.key === "global-lookups") payload.type = t.trim();
+      const path = ed ? `/api/master-data/${page.key}/${ed.id}` : `/api/master-data/${page.key}`;
+      const method = ed ? "PUT" : "POST";
       const res = await apiFetch(path, { method, body: JSON.stringify(payload) });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Save failed");
+    },
+    onSuccess: () => {
       setName("");
       setType("");
       setEditing(null);
-      await load();
-    } catch (e2) {
-      setError(e2.message);
-    } finally {
-      setSaving(false);
-    }
+      setFormError("");
+      queryClient.invalidateQueries({ queryKey: queryKeys.masterData(page.key) });
+    },
+    onError: (e2) => setFormError(e2.message),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (row) => {
+      const res = await apiFetch(`/api/master-data/${page.key}/${row.id}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Delete failed");
+    },
+    onSuccess: () => {
+      setFormError("");
+      queryClient.invalidateQueries({ queryKey: queryKeys.masterData(page.key) });
+    },
+    onError: (e) => setFormError(e.message),
+  });
+
+  const error = formError || queryError?.message || "";
+  const saving = saveMutation.isPending;
+
+  const onSave = (e) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setFormError("");
+    saveMutation.mutate({ editing, name, type });
   };
 
   const onEdit = (row) => {
@@ -81,16 +89,9 @@ export default function MasterData() {
     setType(String(row.type ?? ""));
   };
 
-  const onDelete = async (row) => {
+  const onDelete = (row) => {
     if (!window.confirm(`Delete "${row.name}"?`)) return;
-    try {
-      const res = await apiFetch(`/api/master-data/${page.key}/${row.id}`, { method: "DELETE" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Delete failed");
-      await load();
-    } catch (e) {
-      setError(e.message);
-    }
+    deleteMutation.mutate(row);
   };
 
   const total = rows.length;

@@ -1,0 +1,51 @@
+# Example snippet for EC2 host nginx (nginx/1.20.x on Amazon Linux / Lightsail).
+# The 413 "Request Entity Too Large" error comes from THIS nginx, not Node.
+#
+# 1. Find your site config:
+#    sudo grep -r "proxy_pass\|root " /etc/nginx/conf.d/ /etc/nginx/nginx.conf
+#
+# 2. Inside the `server { ... }` block that serves Magellan, add:
+#
+#    client_max_body_size 105m;
+#
+#    (Per-file limit is 20 MB, but the Proposal form posts up to 5 files in one
+#    request and this directive caps the entire request body, not each file.)
+#
+# 3. Test and reload:
+#    sudo nginx -t && sudo systemctl reload nginx
+#
+# Full example server block:
+
+server {
+    listen 80;
+    server_name your-domain-or-ip;
+
+    client_max_body_size 105m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:5050;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /uploads/ {
+        proxy_pass http://127.0.0.1:5050;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

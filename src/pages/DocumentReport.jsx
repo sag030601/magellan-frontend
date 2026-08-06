@@ -1,8 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { apiFetch } from "../lib/api";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { downloadReportCsv, downloadReportPdf } from "../lib/reportExport";
+import { fetchDocumentFilterOptions, fetchDocumentReport, queryKeys } from "../hooks/queries";
+import { readListFilterMemory, writeListFilterMemory } from "../lib/listFilterMemory";
 
+const FILTER_MEMORY_KEY = "document-report";
+const EMPTY_FILTERS = {
+  candidate_id: "",
+  rank: "",
+  status: "",
+  vessel_name: "",
+  document_category: "",
+  document_name: "",
+  from_date: "",
+  to_date: "",
+};
 function formatDate(value) {
   if (!value && value !== 0) return "";
   const d = typeof value === "number" ? new Date(value * 1000) : new Date(value);
@@ -50,54 +63,32 @@ function buildDocumentExportRows(records, reportType) {
 }
 
 export default function DocumentReport() {
-  const [loading, setLoading] = useState(true);
-  const [loadingReport, setLoadingReport] = useState(false);
-  const [error, setError] = useState("");
-  const [records, setRecords] = useState([]);
-  const [reportType, setReportType] = useState("");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  const saved = readListFilterMemory(FILTER_MEMORY_KEY);
+  const [formError, setFormError] = useState("");
   const [exportingPdf, setExportingPdf] = useState(false);
 
-  const [options, setOptions] = useState({
-    ranks: [],
-    status: [],
-    vesselNames: [],
-    documentCategory: [],
-    documentType: [],
-  });
-
-  const [filters, setFilters] = useState({
-    candidate_id: "",
-    rank: "",
-    status: "",
-    vessel_name: "",
-    document_category: "",
-    document_name: "",
-    from_date: "",
-    to_date: "",
-  });
+  const [filters, setFilters] = useState(() => ({ ...EMPTY_FILTERS, ...(saved?.filters || {}) }));
 
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await apiFetch("/api/reports/document-filter-options");
-        if (!res.ok) throw new Error("Failed to load report options");
-        const data = await res.json();
-        setOptions({
-          ranks: data.ranks || [],
-          status: data.status || [],
-          vesselNames: data.vesselNames || [],
-          documentCategory: data.documentCategory || [],
-          documentType: data.documentType || [],
-        });
-      } catch (e) {
-        setError(e.message || "Failed to load options");
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
+    writeListFilterMemory(FILTER_MEMORY_KEY, { filters });
+  }, [filters]);
+
+  const { data: optsData, isLoading: loading, error: optsError } = useQuery({
+    queryKey: queryKeys.documentFilterOptions,
+    queryFn: fetchDocumentFilterOptions,
+    staleTime: 5 * 60 * 1000,
+  });
+  const options = {
+    ranks: optsData?.ranks || [],
+    status: optsData?.status || [],
+    vesselNames: optsData?.vesselNames || [],
+    documentCategory: optsData?.documentCategory || [],
+    documentType: optsData?.documentType || [],
+  };
+
+  const reportMutation = useMutation({
+    mutationFn: fetchDocumentReport,
+  });
 
   const documentNameOptions = useMemo(() => {
     const byName = options.documentType || [];
@@ -130,30 +121,22 @@ export default function DocumentReport() {
     });
   };
 
-  const generate = async (e) => {
+  const generate = (e) => {
     e.preventDefault();
-    setError("");
-    setLoadingReport(true);
-    try {
-      const params = new URLSearchParams();
-      Object.entries(filters).forEach(([k, v]) => {
-        if (v !== "") params.set(k, v);
-      });
-      const res = await apiFetch(`/api/reports/document-filter?${params.toString()}`);
-      if (!res.ok) throw new Error("Failed to generate document report");
-      const data = await res.json();
-      setRecords(data.records || []);
-      setReportType(data.reportType || "");
-      setFrom(data.from || "");
-      setTo(data.to || "");
-    } catch (e2) {
-      setError(e2.message || "Failed to generate report");
-      setRecords([]);
-    } finally {
-      setLoadingReport(false);
-    }
+    setFormError("");
+    reportMutation.reset();
+    reportMutation.mutate(filters, {
+      onError: (e2) => setFormError(e2.message || "Failed to generate report"),
+    });
   };
 
+  const result = reportMutation.data;
+  const records = result?.records || [];
+  const reportType = result?.reportType || "";
+  const from = result?.from || "";
+  const to = result?.to || "";
+  const loadingReport = reportMutation.isPending;
+  const error = formError || optsError?.message || "";
   const hasRecords = records.length > 0;
   const exportBaseName = `document-report-${new Date().toISOString().slice(0, 10)}`;
 
@@ -272,7 +255,12 @@ export default function DocumentReport() {
                   {records.map((r) => (
                     <tr key={`${r.id}-${r.candidate_id}`} className="border-b hover:bg-[var(--bg-hover)]" style={{ borderColor: "var(--border-primary)" }}>
                       <td className="px-3 py-2">
-                        <Link className="hover:underline font-medium" style={{ color: "var(--accent)" }} to={`/admin/candidates/${r.candidate_id}`}>
+                        <Link
+                          className="hover:underline font-medium"
+                          style={{ color: "var(--accent)" }}
+                          to={`/admin/candidates/${r.candidate_id}`}
+                          state={{ from: "reports", backTo: "/admin/document-report", backLabel: "Back to Reports" }}
+                        >
                           {upper(r.candidate_id)}
                         </Link>
                       </td>

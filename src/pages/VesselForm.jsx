@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
 import { documentHref } from "../lib/documentUrl";
+import { pickDocumentFile } from "../lib/uploadLimits";
+import { fetchVessel, fetchVesselMetaOptions, queryKeys } from "../hooks/queries";
 import "./VesselForm.css";
 
 const EMPTY = {
@@ -42,20 +45,50 @@ function toDateInput(v) {
   return d.toISOString().slice(0, 10);
 }
 
+function applyVesselToForm(v) {
+  return {
+    employer: v.employer ?? "",
+    ship_name: v.ship_name ?? "",
+    imo_number: v.imo_number ?? "",
+    official_number: v.official_number ?? "",
+    call_sign: v.call_sign ?? "",
+    gross_tonnage: v.gross_tonnage != null ? String(v.gross_tonnage) : "",
+    kilo_watt: v.kilo_watt != null ? String(v.kilo_watt) : "",
+    ship_type: v.ship_type ?? "",
+    ship_flag: v.ship_flag ?? "",
+    policy_number: v.policy_number ?? "",
+    policy_validity: toDateInput(v.policy_validity),
+    mlc_certificate_number: v.mlc_certificate_number ?? "",
+    mlc_issue_date: toDateInput(v.mlc_issue_date),
+    financial_security_document_number: v.financial_security_document_number ?? "",
+    financial_security_document_validity: toDateInput(v.financial_security_document_validity),
+    is_cba: v.is_cba === 1 || v.is_cba === true || String(v.is_cba) === "1" ? "1" : "0",
+  };
+}
+
+function vesselDocsFrom(v) {
+  const doc = {};
+  for (const k of FILE_KEYS) {
+    doc[k] =
+      k === "mlc_certificate"
+        ? v.mlc_certificate || v.mlc_certificate_document || ""
+        : v[k] || "";
+  }
+  return doc;
+}
+
 export default function VesselForm() {
   const { id: editId } = useParams();
   const isEdit = Boolean(editId && String(editId).match(/^\d+$/));
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const [form, setForm] = useState(EMPTY);
   const [files, setFiles] = useState(() =>
     Object.fromEntries(FILE_KEYS.map((k) => [k, null])),
   );
   const [existingDocs, setExistingDocs] = useState(() => Object.fromEntries(FILE_KEYS.map((k) => [k, ""])));
-  const [opts, setOpts] = useState({ employers: [], shipTypes: [], shipFlags: [] });
-  const [loading, setLoading] = useState(isEdit);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
+  const [formError, setFormError] = useState("");
 
   const setField = useCallback((k, v) => {
     setForm((p) => ({ ...p, [k]: v }));
@@ -65,81 +98,31 @@ export default function VesselForm() {
     setFiles((p) => ({ ...p, [k]: file || null }));
   }, []);
 
-  const loadOptions = useCallback(async () => {
-    const r = await apiFetch("/api/vessels/meta/options");
-    if (!r.ok) return;
-    const d = await r.json().catch(() => ({}));
-    setOpts({
-      employers: Array.isArray(d.employers) ? d.employers : [],
-      shipTypes: Array.isArray(d.shipTypes) ? d.shipTypes : [],
-      shipFlags: Array.isArray(d.shipFlags) ? d.shipFlags : [],
-    });
-  }, []);
+  const { data: opts = { employers: [], shipTypes: [], shipFlags: [] } } = useQuery({
+    queryKey: queryKeys.vesselMetaOptions,
+    queryFn: fetchVesselMetaOptions,
+    staleTime: 5 * 60 * 1000,
+  });
 
-  const loadVessel = useCallback(async () => {
-    if (!isEdit) return;
-    setLoading(true);
-    try {
-      const r = await apiFetch(`/api/vessels/${editId}`);
-      if (!r.ok) throw new Error("Vessel not found");
-      const v = await r.json();
-      setForm({
-        employer: v.employer ?? "",
-        ship_name: v.ship_name ?? "",
-        imo_number: v.imo_number ?? "",
-        official_number: v.official_number ?? "",
-        call_sign: v.call_sign ?? "",
-        gross_tonnage: v.gross_tonnage != null ? String(v.gross_tonnage) : "",
-        kilo_watt: v.kilo_watt != null ? String(v.kilo_watt) : "",
-        ship_type: v.ship_type ?? "",
-        ship_flag: v.ship_flag ?? "",
-        policy_number: v.policy_number ?? "",
-        policy_validity: toDateInput(v.policy_validity),
-        mlc_certificate_number: v.mlc_certificate_number ?? "",
-        mlc_issue_date: toDateInput(v.mlc_issue_date),
-        financial_security_document_number: v.financial_security_document_number ?? "",
-        financial_security_document_validity: toDateInput(v.financial_security_document_validity),
-        is_cba: v.is_cba === 1 || v.is_cba === true || String(v.is_cba) === "1" ? "1" : "0",
-      });
-      const doc = {};
-      for (const k of FILE_KEYS) {
-        doc[k] =
-          k === "mlc_certificate"
-            ? v.mlc_certificate || v.mlc_certificate_document || ""
-            : v[k] || "";
-      }
-      setExistingDocs(doc);
-    } catch (e) {
-      setError(e?.message || "Failed to load vessel");
-    } finally {
-      setLoading(false);
-    }
-  }, [editId, isEdit]);
+  const {
+    data: vesselData,
+    isLoading: vesselLoading,
+    error: vesselError,
+    refetch: refetchVessel,
+  } = useQuery({
+    queryKey: queryKeys.vessel(editId),
+    queryFn: () => fetchVessel(editId),
+    enabled: isEdit,
+  });
 
   useEffect(() => {
-    loadOptions();
-  }, [loadOptions]);
+    if (!vesselData) return;
+    setForm(applyVesselToForm(vesselData));
+    setExistingDocs(vesselDocsFrom(vesselData));
+  }, [vesselData]);
 
-  useEffect(() => {
-    loadVessel();
-  }, [loadVessel]);
-
-  const resetForm = () => {
-    if (isEdit) {
-      loadVessel();
-      setFiles(Object.fromEntries(FILE_KEYS.map((k) => [k, null])));
-    } else {
-      setForm(EMPTY);
-      setFiles(Object.fromEntries(FILE_KEYS.map((k) => [k, null])));
-    }
-    setError("");
-  };
-
-  const onSubmit = async (e) => {
-    e.preventDefault();
-    setSaving(true);
-    setError("");
-    try {
+  const saveMutation = useMutation({
+    mutationFn: async () => {
       const fd = new FormData();
       Object.entries(form).forEach(([k, v]) => {
         fd.append(k, v ?? "");
@@ -148,7 +131,6 @@ export default function VesselForm() {
         const f = files[k];
         if (f) fd.append(k, f);
       }
-
       const url = isEdit ? `/api/vessels/${editId}` : "/api/vessels";
       const res = await apiFetch(url, {
         method: isEdit ? "PUT" : "POST",
@@ -157,12 +139,35 @@ export default function VesselForm() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Failed to save vessel");
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.vessels });
+      if (isEdit) queryClient.invalidateQueries({ queryKey: queryKeys.vessel(editId) });
       navigate("/admin/vessel");
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
+    },
+    onError: (err) => setFormError(err.message),
+  });
+
+  const loading = isEdit && vesselLoading;
+  const error = formError || vesselError?.message || "";
+  const saving = saveMutation.isPending;
+
+  const resetForm = () => {
+    if (isEdit) {
+      refetchVessel();
+      setFiles(Object.fromEntries(FILE_KEYS.map((k) => [k, null])));
+    } else {
+      setForm(EMPTY);
+      setFiles(Object.fromEntries(FILE_KEYS.map((k) => [k, null])));
     }
+    setFormError("");
+  };
+
+  const onSubmit = (e) => {
+    e.preventDefault();
+    setFormError("");
+    saveMutation.mutate();
   };
 
   const docHint = (key) => {
@@ -272,7 +277,7 @@ export default function VesselForm() {
             </div>
             <div className="vessel-field">
               <label>SEA</label>
-              <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setFile("sea_document", e.target.files?.[0] || null)} />
+              <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setFile("sea_document", pickDocumentFile(e))} />
               {docHint("sea_document")}
             </div>
             <div className="vessel-field">
@@ -290,7 +295,7 @@ export default function VesselForm() {
             </div>
             <div className="vessel-field">
               <label>CBA Document</label>
-              <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setFile("cba_document", e.target.files?.[0] || null)} />
+              <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setFile("cba_document", pickDocumentFile(e))} />
               {docHint("cba_document")}
             </div>
           </div>
@@ -310,7 +315,7 @@ export default function VesselForm() {
             </div>
             <div className="vessel-field">
               <label>Policy Document</label>
-              <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setFile("policy_document", e.target.files?.[0] || null)} />
+              <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setFile("policy_document", pickDocumentFile(e))} />
               {docHint("policy_document")}
             </div>
           </div>
@@ -330,7 +335,7 @@ export default function VesselForm() {
             </div>
             <div className="vessel-field">
               <label>MLC Certificate</label>
-              <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setFile("mlc_certificate", e.target.files?.[0] || null)} />
+              <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setFile("mlc_certificate", pickDocumentFile(e))} />
               {docHint("mlc_certificate")}
             </div>
             <div className="vessel-field">
@@ -339,7 +344,7 @@ export default function VesselForm() {
             </div>
             <div className="vessel-field">
               <label>Financial Security Doc</label>
-              <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setFile("financial_security_document", e.target.files?.[0] || null)} />
+              <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setFile("financial_security_document", pickDocumentFile(e))} />
               {docHint("financial_security_document")}
             </div>
             <div className="vessel-field">
@@ -348,12 +353,12 @@ export default function VesselForm() {
             </div>
             <div className="vessel-field">
               <label>DMLC Part 1</label>
-              <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setFile("dmlc_part_1", e.target.files?.[0] || null)} />
+              <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setFile("dmlc_part_1", pickDocumentFile(e))} />
               {docHint("dmlc_part_1")}
             </div>
             <div className="vessel-field">
               <label>DMLC Part 2</label>
-              <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setFile("dmlc_part_2", e.target.files?.[0] || null)} />
+              <input className="form-control" type="file" accept=".pdf,application/pdf" onChange={(e) => setFile("dmlc_part_2", pickDocumentFile(e))} />
               {docHint("dmlc_part_2")}
             </div>
           </div>

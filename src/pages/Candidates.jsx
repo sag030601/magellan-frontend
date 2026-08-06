@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
 import { fmtAuditUserName } from "../lib/auditDisplay";
+import { pickDocumentFile } from "../lib/uploadLimits";
+import { readListFilterMemory, writeListFilterMemory, clearListFilterMemory } from "../lib/listFilterMemory";
 import "./Candidates.css";
 
 const API = import.meta.env.VITE_API_URL || "";
@@ -10,6 +12,7 @@ const INPUT_CLS = "form-control";
 const FIELD_WRAP = "candidates-field";
 const ADD_LABEL = "block text-xs font-semibold mb-0.5";
 const PAGE_SIZES = [25, 50, 100, 200];
+const FILTER_MEMORY_KEY = "candidates-list";
 
 const EMPTY_FILTERS = {
   rank: "", nationality: "", given_name: "", surname: "", passport_number: "",
@@ -50,15 +53,16 @@ const EMPTY_ADD_FORM = {
 
 /** Percent widths for `colgroup` — sum 100%, fits viewport with `table-layout: fixed` */
 const CANDIDATE_TABLE_COL_WIDTHS = [
-  "3%", "11%", "6.5%", "10.5%", "7.5%", "9%", "6%", "9.5%", "10%", "11.5%", "12.5%", "3%",
+  "3%", "10%", "7%", "9%", "6%", "10%", "8%", "5.5%", "8%", "9%", "10%", "11.5%", "3%",
 ];
 
 const COLUMNS = [
   { key: "id", label: "CID" },
   { key: "name", label: "Name" },
-  { key: "nat", label: "Nationality" },
-  { key: "rank", label: "Rank" },
   { key: "avail_st", label: "Availability Status" },
+  { key: "rank", label: "Rank" },
+  { key: "nat", label: "Nationality" },
+  { key: "email", label: "Email" },
   { key: "avail_dt", label: "Availability Date" },
   { key: "follow", label: "Follow Up Date" },
   { key: "contact", label: "Contact No1." },
@@ -119,6 +123,7 @@ function candidateColumnHeaderClass(key) {
   if (key === "name") return "candidates-col-name candidates-col-person";
   if (key === "vname") return "candidates-col-name candidates-col-vessel";
   if (key === "avail_st") return "candidates-col-mid candidates-col-status";
+  if (key === "email") return "candidates-col-mid candidates-col-email";
   if (key === "rank") return "candidates-col-mid candidates-col-rank";
   if (key === "vtype") return "candidates-col-mid candidates-col-vtype";
   if (key === "nat") return "candidates-col-mid";
@@ -196,8 +201,14 @@ const fullName = (c) => [c.given_name, c.middle_name, c.surname].filter(Boolean)
 const displayNat = (c) => { const n = c.nationality_name ?? c.nationality; return n && String(n).trim() ? String(n).trim() : "—"; };
 const csvCell = (s) => { const t = String(s ?? ""); return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
 
+function isOnBoardWithUsStatus(status) {
+  const s = String(status || "").toLowerCase().replace(/-/g, " ");
+  return s.includes("onboard") || s.includes("on board");
+}
+
 function statusTone(status) {
   const s = String(status || "").toLowerCase();
+  if (isOnBoardWithUsStatus(status)) return "status-badge--info";
   if (s.includes("leave") || s.includes("off")) return "status-badge--warn";
   if (s.includes("unavailable") || s.includes("hold") || s.includes("inactive")) return "status-badge--danger";
   return "status-badge--ok";
@@ -359,12 +370,15 @@ function Pagination({ page, totalPages, total, pageSize, onPageChange, onPageSiz
 // ── Main component ──────────────────────────────────────────────────────────
 
 export default function Candidates() {
-  const [filters, setFilters] = useState({ ...EMPTY_FILTERS });
-  const [activeFilters, setActiveFilters] = useState({ ...EMPTY_FILTERS });
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
-  const [exportFrom, setExportFrom] = useState("");
-  const [exportTo, setExportTo] = useState("");
+  const saved = readListFilterMemory(FILTER_MEMORY_KEY);
+  const [filters, setFilters] = useState(() => ({ ...EMPTY_FILTERS, ...(saved?.filters || {}) }));
+  const [activeFilters, setActiveFilters] = useState(() => ({ ...EMPTY_FILTERS, ...(saved?.activeFilters || {}) }));
+  const [page, setPage] = useState(() => (Number(saved?.page) > 0 ? Number(saved.page) : 1));
+  const [pageSize, setPageSize] = useState(() => (
+    PAGE_SIZES.includes(Number(saved?.pageSize)) ? Number(saved.pageSize) : 50
+  ));
+  const [exportFrom, setExportFrom] = useState(() => (typeof saved?.exportFrom === "string" ? saved.exportFrom : ""));
+  const [exportTo, setExportTo] = useState(() => (typeof saved?.exportTo === "string" ? saved.exportTo : ""));
   const [exportBusy, setExportBusy] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -388,9 +402,26 @@ export default function Candidates() {
     [activeFilters, exportFrom, exportTo],
   );
 
+  const skipExportPageReset = useRef(true);
   useEffect(() => {
+    if (skipExportPageReset.current) {
+      skipExportPageReset.current = false;
+      return;
+    }
     setPage(1);
   }, [exportFrom, exportTo]);
+
+  // Keep filters across SPA navigation; wiped only on full page refresh (module re-init).
+  useEffect(() => {
+    writeListFilterMemory(FILTER_MEMORY_KEY, {
+      filters,
+      activeFilters,
+      page,
+      pageSize,
+      exportFrom,
+      exportTo,
+    });
+  }, [filters, activeFilters, page, pageSize, exportFrom, exportTo]);
 
   const { data: optsData } = useQuery({
     queryKey: ["candidate-search-options"],
@@ -418,7 +449,10 @@ export default function Candidates() {
   const handleClear = () => {
     setFilters({ ...EMPTY_FILTERS });
     setActiveFilters({ ...EMPTY_FILTERS });
+    setExportFrom("");
+    setExportTo("");
     setPage(1);
+    clearListFilterMemory(FILTER_MEMORY_KEY);
   };
 
   const handlePageChange = (p) => setPage(p);
@@ -480,10 +514,11 @@ export default function Candidates() {
       });
       if (addPhotoFile) formData.append("photo_upload", addPhotoFile);
       if (addCvFile) formData.append("cv_upload", addCvFile);
+      const hasFiles = Boolean(addPhotoFile || addCvFile);
       const r = await apiFetch("/api/candidates", {
         method: "POST",
-        body: formData,
-        headers: {},
+        body: hasFiles ? formData : JSON.stringify(payload),
+        headers: hasFiles ? {} : { "Content-Type": "application/json" },
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || "Failed to create candidate");
@@ -775,7 +810,7 @@ export default function Candidates() {
                   type="file"
                   className={INPUT_CLS}
                   accept="image/*"
-                  onChange={(e) => setAddPhotoFile(e.target.files?.[0] || null)}
+                  onChange={(e) => setAddPhotoFile(pickDocumentFile(e))}
                 />
               </div>
               <div className="mb-2">
@@ -784,7 +819,7 @@ export default function Candidates() {
                   type="file"
                   className={INPUT_CLS}
                   accept=".pdf,.doc,.docx"
-                  onChange={(e) => setAddCvFile(e.target.files?.[0] || null)}
+                  onChange={(e) => setAddCvFile(pickDocumentFile(e))}
                 />
               </div>
               <div className="mb-2 lg:col-span-2">
@@ -915,8 +950,6 @@ export default function Candidates() {
                       <button type="button" onClick={() => handleView(c.id)} className="font-semibold hover:underline tabular-nums" style={{ color: "var(--accent)", background: "none", border: "none", cursor: "pointer", padding: 0 }}>{c.id}</button>
                       </td>
                     <td className="candidates-col-name candidates-col-person candidates-cell-wrap uppercase font-semibold">{fullName(c)}</td>
-                    <td className="candidates-col-mid candidates-cell-wrap uppercase">{displayNat(c)}</td>
-                    <td className="candidates-col-mid candidates-col-rank candidates-cell-wrap uppercase">{c.rank_name || "\u2014"}</td>
                     <td className="candidates-col-status uppercase" title={cellTitle(c.availability_status_name)}>
                       {c.availability_status_name ? (
                         <span className={`status-badge-pill ${statusTone(c.availability_status_name)}`}>
@@ -924,6 +957,11 @@ export default function Candidates() {
                         </span>
                       ) : "\u2014"}
                       </td>
+                    <td className="candidates-col-mid candidates-col-rank candidates-cell-wrap uppercase">{c.rank_name || "\u2014"}</td>
+                    <td className="candidates-col-mid candidates-cell-wrap uppercase">{displayNat(c)}</td>
+                    <td className="candidates-col-mid candidates-col-email candidates-cell-wrap" title={cellTitle(c.email_id || c.email)}>
+                      {c.email_id || c.email || "\u2014"}
+                    </td>
                     <td className="candidates-col-date candidates-col-availability-date">{fmtDate(c.availability_date)}</td>
                     <td className="candidates-col-date">{fmtDate(c.followup_date)}</td>
                     <td className="candidates-col-mid candidates-col-contact candidates-cell-wrap font-medium tabular-nums">{c.contact_no_1 || c.contact1 || "\u2014"}</td>
@@ -939,7 +977,7 @@ export default function Candidates() {
                     </td>
                   </tr>
                 )) : (
-                  <tr><td colSpan={12} className="px-4 py-8 text-center text-sm" style={{ color: "var(--text-tertiary)" }}>No candidates found</td></tr>
+                  <tr><td colSpan={13} className="px-4 py-8 text-center text-sm" style={{ color: "var(--text-tertiary)" }}>No candidates found</td></tr>
                 )}
               </tbody>
             </table>

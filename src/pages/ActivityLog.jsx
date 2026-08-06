@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { apiFetch } from "../lib/api";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { fetchActivityLogFilters, fetchActivityLogs, queryKeys } from "../hooks/queries";
+import { readListFilterMemory, writeListFilterMemory, clearListFilterMemory } from "../lib/listFilterMemory";
 
 function fmtWhen(v) {
   if (!v) return "—";
@@ -17,56 +19,42 @@ const ACTION_BADGE = {
   login: "status-badge--neutral",
 };
 
+const FILTER_MEMORY_KEY = "activity-log";
+const EMPTY_FILTERS = {
+  q: "",
+  action: "",
+  resource_type: "",
+  candidate_id: "",
+  from: "",
+  to: "",
+};
+
 export default function ActivityLog() {
-  const [logs, setLogs] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [total, setTotal] = useState(0);
-  const [filters, setFilters] = useState({
-    q: "",
-    action: "",
-    resource_type: "",
-    candidate_id: "",
-    from: "",
-    to: "",
-  });
-  const [filterOpts, setFilterOpts] = useState({ actions: [], resourceTypes: [] });
+  const saved = readListFilterMemory(FILTER_MEMORY_KEY);
+  const [page, setPage] = useState(() => (Number(saved?.page) > 0 ? Number(saved.page) : 1));
+  const [filters, setFilters] = useState(() => ({ ...EMPTY_FILTERS, ...(saved?.filters || {}) }));
 
-  const loadFilters = useCallback(async () => {
-    try {
-      const res = await apiFetch("/api/activity-logs/filters");
-      if (res.ok) setFilterOpts(await res.json());
-    } catch {
-      /* optional */
-    }
-  }, []);
-
-  const loadLogs = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const params = new URLSearchParams({ page: String(page), pageSize: "25" });
-      Object.entries(filters).forEach(([k, v]) => {
-        if (v != null && String(v).trim() !== "") params.set(k, String(v).trim());
-      });
-      const res = await apiFetch(`/api/activity-logs?${params}`);
-      if (!res.ok) throw new Error("Failed to load activity log");
-      const data = await res.json();
-      setLogs(data.logs || []);
-      setTotalPages(data.totalPages || 1);
-      setTotal(data.total || 0);
-    } catch (e) {
-      setError(e.message || "Failed to load activity log");
-      setLogs([]);
-    } finally {
-      setLoading(false);
-    }
+  useEffect(() => {
+    writeListFilterMemory(FILTER_MEMORY_KEY, { filters, page });
   }, [filters, page]);
 
-  useEffect(() => { loadFilters(); }, [loadFilters]);
-  useEffect(() => { loadLogs(); }, [loadLogs]);
+  const { data: filterOpts = { actions: [], resourceTypes: [] } } = useQuery({
+    queryKey: queryKeys.activityLogFilters,
+    queryFn: fetchActivityLogFilters,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const { data, isFetching, error: queryError, refetch } = useQuery({
+    queryKey: queryKeys.activityLogs({ page, filters }),
+    queryFn: () => fetchActivityLogs({ page, filters }),
+    placeholderData: keepPreviousData,
+  });
+
+  const logs = data?.logs || [];
+  const totalPages = data?.totalPages || 1;
+  const total = data?.total || 0;
+  const loading = isFetching;
+  const error = queryError?.message || "";
 
   const onFilterChange = (e) => {
     const { name, value } = e.target;
@@ -90,16 +78,16 @@ export default function ActivityLog() {
         <div className="p-5 border-b" style={{ borderColor: "var(--border-primary)" }}>
           <form
             className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3"
-            onSubmit={(e) => { e.preventDefault(); setPage(1); loadLogs(); }}
+            onSubmit={(e) => { e.preventDefault(); setPage(1); refetch(); }}
           >
             <input className={fieldCls} style={fieldStyle} name="q" value={filters.q} onChange={onFilterChange} placeholder="Search summary, user, path…" />
             <select className={fieldCls} style={fieldStyle} name="action" value={filters.action} onChange={onFilterChange}>
               <option value="">All actions</option>
-              {filterOpts.actions.map((a) => <option key={a} value={a}>{a}</option>)}
+              {(filterOpts.actions || []).map((a) => <option key={a} value={a}>{a}</option>)}
             </select>
             <select className={fieldCls} style={fieldStyle} name="resource_type" value={filters.resource_type} onChange={onFilterChange}>
               <option value="">All resources</option>
-              {filterOpts.resourceTypes.map((r) => <option key={r} value={r}>{r.replace(/_/g, " ")}</option>)}
+              {(filterOpts.resourceTypes || []).map((r) => <option key={r} value={r}>{r.replace(/_/g, " ")}</option>)}
             </select>
             <input className={fieldCls} style={fieldStyle} name="candidate_id" value={filters.candidate_id} onChange={onFilterChange} placeholder="Crew ID" />
             <input className={fieldCls} style={fieldStyle} type="date" name="from" value={filters.from} onChange={onFilterChange} />
@@ -108,7 +96,11 @@ export default function ActivityLog() {
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
-                onClick={() => { setFilters({ q: "", action: "", resource_type: "", candidate_id: "", from: "", to: "" }); setPage(1); }}
+                onClick={() => {
+                  setFilters({ ...EMPTY_FILTERS });
+                  setPage(1);
+                  clearListFilterMemory(FILTER_MEMORY_KEY);
+                }}
               >
                 Clear
               </button>

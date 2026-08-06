@@ -1,10 +1,18 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import axios from "../lib/axios";
 import { useAuth } from "../context/AuthContext";
 import RecordAuditPopover from "../components/RecordAuditPopover";
 import { licenceDocumentUrl } from "../lib/documentUrl";
+import {
+  MAX_REQUEST_UPLOAD_MB,
+  exceedsRequestLimit,
+  pickDocumentFile,
+  rejectOversizedFile,
+  uploadErrorMessage,
+} from "../lib/uploadLimits";
 import "./CandidateDetails.css";
 
 /** Passport / CDC / Visa / STCW rows in `seafarers_docs` — STCW tab lists all other document types */
@@ -31,6 +39,69 @@ const EDUCATION_TYPE_OPTIONS = [
   { value: "board", label: "Board" },
 ];
 
+/** Flag state — Processed by / Agent Name dropdown */
+const FLAG_STATE_PROCESSED_BY_OPTIONS = [
+  "FNSA Team",
+  "Inchcape Team",
+  "Magellan Crewing MGMT",
+  "Zivya Marine Services.",
+  "Vessel Charter",
+  "Other Agent",
+];
+
+function stripHtmlToText(html) {
+  if (html == null) return "";
+  return String(html)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, "\n")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, n) => {
+      const code = Number(n);
+      return Number.isFinite(code) ? String.fromCharCode(code) : "";
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => {
+      const code = parseInt(h, 16);
+      return Number.isFinite(code) ? String.fromCharCode(code) : "";
+    })
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n\s+/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function remarkAttachmentUrl(fileUpload) {
+  if (!fileUpload) return null;
+  const raw = String(fileUpload);
+  if (/^https?:\/\//i.test(raw)) return raw;
+  const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+  const rel = raw.replace(/^public\/?/, "").replace(/^storage\/?/, "").replace(/^\/+/, "");
+  return rel ? `${apiBase}/uploads/${rel}` : null;
+}
+
+function formatRemarkDateTime(val) {
+  if (val == null || val === "") return "";
+  const num = Number(val);
+  const d = !Number.isNaN(num) && String(val).match(/^\d+$/)
+    ? new Date(num > 1e12 ? num : num * 1000)
+    : new Date(val);
+  if (Number.isNaN(d.getTime())) return String(val);
+  return d.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).replace(/\//g, "-");
+}
+
 const VERIFICATION_MODE_OPTIONS = [
   { value: "by_email", label: "By email" },
   { value: "by_website", label: "By website" },
@@ -46,12 +117,148 @@ const VISA_ENTRY_TYPE_OPTIONS = [
 
 const TAB_PAGE_SIZES = [10, 25, 50];
 
-function AuditCell({ record, children }) {
+/** Proposal row upload columns, in the same order as the Proposal form. */
+const PROPOSAL_DOC_FIELDS = [
+  { key: "cv_package_file", label: "CV Package (Aramco)", icon: "fa-file-lines" },
+  { key: "proposal_email_file", label: "Proposal Email", icon: "fa-envelope" },
+  { key: "approval_email_file", label: "Approval Email", icon: "fa-envelope-circle-check" },
+  { key: "rejection_email_file", label: "Rejection Email", icon: "fa-envelope-open-text" },
+  { key: "other_documents_file", label: "Other Documents", icon: "fa-paperclip" },
+  { key: "upload_file", label: "Attachment", icon: "fa-paperclip" },
+];
+
+/** @param {unknown} url */
+function fileExtensionOf(url) {
+  const clean = String(url || "").split(/[?#]/)[0];
+  const name = clean.split("/").pop() || "";
+  const ext = name.includes(".") ? name.split(".").pop() : "";
+  return ext ? ext.toLowerCase() : "";
+}
+
+const PREVIEWABLE_IMAGE_EXTS = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"];
+
+/** Proposal status dropdown — values stored in `planings.proposal_status`. */
+const PROPOSAL_STATUS_OPTIONS = [
+  { value: "to_be_proposed", label: "To be Proposed" },
+  { value: "in_process", label: "In Process" },
+  { value: "on_hold", label: "On Hold" },
+  { value: "cancelled_by_client", label: "Cancelled by Client" },
+  { value: "rejected_by_manager", label: "Rejected by Manager" },
+  { value: "approved_by_owner_client", label: "Approved by Owner/Client" },
+  { value: "approved_by_crew_manager", label: "Approved by Crew Manager" },
+  { value: "approved_by_dpa", label: "Approved by DPA" },
+  { value: "approved_by_tech_manager", label: "Approved by Tech Manager" },
+  { value: "approved", label: "Approved" },
+  { value: "rejected", label: "Rejected" },
+  { value: "rejected_by_owner_client", label: "Rejected by Owner/Client" },
+  { value: "on_hold_by_owner_client", label: "On-Hold by Owner/Client" },
+  { value: "cv_shortlisted_by_manager", label: "CV Shortlisted by Manager" },
+  { value: "awaiting_reply_from_client", label: "Awaiting Reply from Client" },
+  { value: "awaiting_reply_from_manager", label: "Awaiting Reply from Manager" },
+  { value: "no_response_by_manager", label: "No Response by Manager (15 DAYS+)" },
+  { value: "no_response_by_owner_client", label: "No Response by Owner/Client (15 DAYS+)" },
+];
+
+function proposalStatusLabel(value) {
+  if (value == null || String(value).trim() === "") return "-";
+  const key = String(value).trim();
+  const found = PROPOSAL_STATUS_OPTIONS.find((o) => o.value === key);
+  if (found) return found.label;
+  // Legacy free-text / old slugs (e.g. "awaiting_reply client")
+  return key.replace(/_/g, " ");
+}
+
+/** Visa multi-document uploads (same order as the Visa form). */
+const VISA_DOC_FIELDS = [
+  { key: "loi_sponsor_file", label: "LOI Upload (Sponsor)", icon: "fa-file-signature" },
+  { key: "visa_upload_file", label: "Visa Upload", icon: "fa-passport" },
+  { key: "extended_visa_copy_1_file", label: "Extended Visa Copy (First)", icon: "fa-file" },
+  { key: "extended_visa_copy_2_file", label: "Extended Visa Copy (2nd)", icon: "fa-file" },
+  { key: "extended_visa_copy_3_file", label: "Extended Visa Copy (3rd)", icon: "fa-file" },
+  { key: "extended_visa_copy_4_file", label: "Extended Visa Copy (4th)", icon: "fa-file" },
+];
+
+const VISA_SPONSOR_OPTIONS = [
+  { value: "sedres_ksa", label: "SEDRES (KSA)" },
+  { value: "inchcape_shipping_ksa", label: "INCHCAPE Shipping (KSA)" },
+  { value: "fujairah_national_shipping_llc", label: "Fujairah National Shipping LLC" },
+  { value: "magellan_crewing_management", label: "Magellan Crewing Management" },
+  { value: "magellan_armada_ship_management_fzco", label: "Magellan Armada Ship Management FZCo" },
+  { value: "kanoo_shipping_ksa", label: "Kanoo Shipping (KSA)" },
+  { value: "adnoc", label: "ADNOC" },
+  { value: "nmdc", label: "NMDC" },
+  { value: "lamparel", label: "Lamparel" },
+  { value: "n_a", label: "N/A" },
+];
+
+function visaSponsorLabel(value) {
+  if (value == null || String(value).trim() === "") return "-";
+  const key = String(value).trim();
+  const found = VISA_SPONSOR_OPTIONS.find((o) => o.value === key);
+  if (found) return found.label;
+  return key.replace(/_/g, " ");
+}
+
+/** Resolve absolute URL for a seafarers/visa stored filename. */
+function seafarersDocFileUrl(raw, candidateId) {
+  if (raw == null || String(raw).trim() === "") return null;
+  const s = String(raw);
+  if (s.startsWith("http")) return s;
+  const fileName = s.replace(/^\/+/, "").replace(/^public\/?/, "").split("/").pop();
+  if (!fileName) return null;
+  return `${import.meta.env.VITE_API_URL || ""}/uploads/documents/${candidateId}/${fileName}`;
+}
+
+/** Uploaded visa documents for a row (plus legacy file_path as fallback). */
+function visaDocumentsFor(row, candidateId) {
+  const docs = VISA_DOC_FIELDS.filter(({ key }) => row?.[key]).map(({ key, label, icon }) => {
+    const raw = String(row[key]);
+    const fileName = raw.replace(/^\/+/, "").split("/").pop();
+    const url = seafarersDocFileUrl(raw, candidateId);
+    return { key, label, icon, fileName, url, ext: fileExtensionOf(fileName) };
+  });
+  // Legacy single attachment when no dedicated visa_upload_file is set.
+  if (row?.file_path && !row?.visa_upload_file) {
+    const raw = String(row.file_path);
+    const fileName = raw.replace(/^\/+/, "").split("/").pop();
+    const url = seafarersDocFileUrl(raw, candidateId);
+    if (url) {
+      docs.push({
+        key: "file_path",
+        label: "Visa Document",
+        icon: "fa-passport",
+        fileName,
+        url,
+        ext: fileExtensionOf(fileName),
+      });
+    }
+  }
+  return docs;
+}
+
+/** Uploaded proposal documents for a row, resolved to absolute URLs. */
+function proposalDocumentsFor(row, candidateId) {
+  return PROPOSAL_DOC_FIELDS.filter(({ key }) => row?.[key]).map(({ key, label, icon }) => {
+    const raw = String(row[key]);
+    const fileName = raw.replace(/^\/+/, "").split("/").pop();
+    const url = raw.startsWith("http")
+      ? raw
+      : `${import.meta.env.VITE_API_URL || ""}/uploads/documents/${candidateId}/${fileName}`;
+    return { key, label, icon, fileName, url, ext: fileExtensionOf(fileName) };
+  });
+}
+
+/** Action icons with audit details on hover. */
+function ActionToolbar({ record, children, className = "", role, "aria-label": ariaLabel }) {
   return (
-    <td className="doc-row-audit-cell">
-      <span className="doc-row-audit-index">{children}</span>
+    <div
+      className={`action-icons-toolbar action-audit-hover ${className}`.trim()}
+      role={role}
+      aria-label={ariaLabel}
+    >
+      {children}
       <RecordAuditPopover record={record} />
-    </td>
+    </div>
   );
 }
 
@@ -193,9 +400,15 @@ function calcInclusivePeriod(signOn, signOff) {
   return `${days} days`;
 }
 
+function isOnBoardWithUsStatus(status) {
+  const s = String(status || "").toLowerCase().replace(/-/g, " ");
+  return s.includes("onboard") || s.includes("on board");
+}
+
 function availabilityTone(status) {
   const s = String(status || "").toLowerCase();
   if (!s || s === "n/a") return "status-badge--neutral";
+  if (isOnBoardWithUsStatus(status)) return "status-badge--info";
   if (s.includes("leave") || s.includes("off")) return "status-badge--warn";
   if (s.includes("unavailable") || s.includes("hold") || s.includes("inactive")) return "status-badge--danger";
   return "status-badge--ok";
@@ -219,7 +432,17 @@ function resolveAvailabilityStatusLabel(candidateLike, availabilityStatusOpts = 
 const CandidateDetails = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
+  const queryClient = useQueryClient();
+
+  const fromReports = location.state?.from === "reports";
+  const backToPath = fromReports
+    ? (location.state?.backTo || "/admin/report")
+    : "/admin/candidates";
+  const backLabel = fromReports
+    ? (location.state?.backLabel || "Back to Reports")
+    : "Back to Candidates";
 
   // State for main tabs (Basic, Documents, Services, Proposal, Medicals, Flag state, Pre Joining, Sign On, Sign Off, Communication)
   const [activeMainTab, setActiveMainTab] = useState("basic_details");
@@ -228,6 +451,11 @@ const CandidateDetails = () => {
   // Form data states
   const [candidateData, setCandidateData] = useState({});
   const [formData, setFormData] = useState({});
+  const [personalInfoEditing, setPersonalInfoEditing] = useState(false);
+  const [personalInfoSnapshot, setPersonalInfoSnapshot] = useState(null);
+  const [personalInfoSaving, setPersonalInfoSaving] = useState(false);
+  const personalInfoEditingRef = useRef(false);
+  const candidateFetchFastRef = useRef(false);
 
   // Address data
   const [addressData, setAddressData] = useState({
@@ -288,6 +516,18 @@ const CandidateDetails = () => {
   const [preJoiningTravelDocs, setPreJoiningTravelDocs] = useState([]);
   const [postSignOnDocs, setPostSignOnDocs] = useState([]);
   const [postSignOffDocs, setPostSignOffDocs] = useState([]);
+  const [candidateRemarks, setCandidateRemarks] = useState([]);
+  const [remarksSearch, setRemarksSearch] = useState("");
+  const [expandedRemarkIds, setExpandedRemarkIds] = useState(() => new Set());
+  const [basicPhotoFile, setBasicPhotoFile] = useState(null);
+  const [basicCvFile, setBasicCvFile] = useState(null);
+  const [remarkModal, setRemarkModal] = useState({
+    open: false,
+    editingId: null,
+    remarks: "",
+    file: null,
+    saving: false,
+  });
   const [signOnDocumentTypes, setSignOnDocumentTypes] = useState([]);
   const [showSignOnDocModal, setShowSignOnDocModal] = useState(false);
   const [signOnDocSignonId, setSignOnDocSignonId] = useState(null);
@@ -344,10 +584,11 @@ const CandidateDetails = () => {
   const exportMenuRef = useRef(null);
   const exportDropdownBtnRef = useRef(null);
   const exportDropdownMenuRef = useRef(null);
-  /** Ranks & vessel types from `/api/candidates/search-options` (same masters as list search). */
+  /** Ranks, vessel types & engine makes from `/api/candidates/search-options` (same masters as list search). */
   const [masterSearchOpts, setMasterSearchOpts] = useState({
     ranks: [],
     vesselTypes: [],
+    engineMakes: [],
     availabilityStatus: [],
     preJoiningMedicalTypes: [],
     preMedicalDocumentTypes: [],
@@ -357,8 +598,41 @@ const CandidateDetails = () => {
   const [medicalDocFile, setMedicalDocFile] = useState(null);
   /** Multipart file for pre-joining travel doc add/edit. */
   const [preJoiningTravelFile, setPreJoiningTravelFile] = useState(null);
+  /** Multipart file for flag state doc add/edit. */
+  const [flagStateDocFile, setFlagStateDocFile] = useState(null);
+  /** Multipart files for proposal document uploads. */
+  const [proposalFiles, setProposalFiles] = useState({
+    cv_package_file: null,
+    proposal_email_file: null,
+    approval_email_file: null,
+    rejection_email_file: null,
+    other_documents_file: null,
+  });
   // Generic modal state for Services, Proposal, Medicals, FlagState, PreJoining tabs
   const [genericModal, setGenericModal] = useState({ open: false, type: "", editingId: null, form: {}, saving: false });
+  /** Proposal documents: pick from the row's uploads, then preview in-app. */
+  const [proposalDocViewer, setProposalDocViewer] = useState({ open: false, row: null, docs: [], selected: null });
+
+  const openProposalDocViewer = (row) => {
+    const docs = proposalDocumentsFor(row, id);
+    if (!docs.length) return;
+    setProposalDocViewer({ open: true, row, docs, selected: docs.length === 1 ? docs[0] : null });
+  };
+
+  const closeProposalDocViewer = () =>
+    setProposalDocViewer({ open: false, row: null, docs: [], selected: null });
+
+  const downloadProposalDoc = (doc) => {
+    if (!doc?.url) return;
+    const a = document.createElement("a");
+    a.href = doc.url;
+    a.download = doc.fileName || "document";
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
   const [tabPaging, setTabPaging] = useState({
     record_of_sea_services: { page: 1, pageSize: 10 },
     planings: { page: 1, pageSize: 10 },
@@ -372,9 +646,37 @@ const CandidateDetails = () => {
   const openGenericModal = async (type, row = null) => {
     const defaults = {
       services: { rank: "", vessel_name: "", flag: "", vessel_type: "", grt: "", dwt: "", bhp: "", engine_type: "", sign_on_date: "", sign_off_date: "", period: "", reason_of_sign_off: "", owner_company: "" },
-      proposal: { rank: "", vessel_name: "", contract_duration: "", tentative_joining_schedule: "", wages: "", proposal_status: "", proposal_date: "", approval_date: "", tentative_travel_date: "" },
+      proposal: {
+        rank: "",
+        vessel_name: "",
+        contract_duration: "",
+        proposed_wages: "",
+        approved_wages: "",
+        proposal_date: "",
+        proposal_status: "",
+        approval_date: "",
+        tentative_joining_schedule: "",
+        remarks: "",
+        cv_package_file: "",
+        proposal_email_file: "",
+        approval_email_file: "",
+        rejection_email_file: "",
+        other_documents_file: "",
+        wages: "",
+        tentative_travel_date: "",
+      },
       medicals: { medical_id: "", certificate_number: "", country_id: "", issue_date: "", expiry_date: "" },
-      flagstate: { flag_doc_country: "", flag_doc_name: "", flag_doc_grade: "", issue_date: "", expiry_date: "" },
+      flagstate: {
+        flag_doc_country: "",
+        flag_doc_name: "",
+        flag_doc_grade: "",
+        endorsement_no: "",
+        issue_date: "",
+        expiry_date: "",
+        processed_by: "",
+        remarks: "",
+        file_path: "",
+      },
       prejoining: { document_id: "", country_id: "", issue_date: "", expiry_date: "" },
     };
     if (!defaults[type]) return;
@@ -399,6 +701,18 @@ const CandidateDetails = () => {
       form.period = calcInclusivePeriod(form.sign_on_date, form.sign_off_date);
     }
     if (type === "medicals") setMedicalDocFile(null);
+    if (type === "flagstate") setFlagStateDocFile(null);
+    if (type === "proposal") {
+      setProposalFiles({
+        cv_package_file: null,
+        proposal_email_file: null,
+        approval_email_file: null,
+        rejection_email_file: null,
+        other_documents_file: null,
+      });
+      // Legacy rows only had `wages` — treat as proposed wages when editing.
+      if (!form.proposed_wages && form.wages) form.proposed_wages = form.wages;
+    }
     if ((type === "services" || type === "proposal") && !vesselsList.length) {
       try {
         const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
@@ -435,6 +749,7 @@ const CandidateDetails = () => {
           setMasterSearchOpts({
             ranks: d.ranks || [],
             vesselTypes: d.vesselTypes || [],
+            engineMakes: d.engineMakes || [],
             availabilityStatus: d.availabilityStatus || [],
             preJoiningMedicalTypes: d.preJoiningMedicalTypes || [],
             preMedicalDocumentTypes: d.preMedicalDocumentTypes || d.preJoiningMedicalTypes || [],
@@ -451,6 +766,14 @@ const CandidateDetails = () => {
   const closeGenericModal = () => {
     setMedicalDocFile(null);
     setPreJoiningTravelFile(null);
+    setFlagStateDocFile(null);
+    setProposalFiles({
+      cv_package_file: null,
+      proposal_email_file: null,
+      approval_email_file: null,
+      rejection_email_file: null,
+      other_documents_file: null,
+    });
     setGenericModal({ open: false, type: "", editingId: null, form: {}, saving: false });
   };
 
@@ -510,6 +833,45 @@ const CandidateDetails = () => {
         fd.append("expiry_date", form.expiry_date ?? "");
         if (preJoiningTravelFile) fd.append("file", preJoiningTravelFile);
         await axios[method](url, fd);
+      } else if (type === "flagstate") {
+        const fd = new FormData();
+        fd.append("flag_doc_country", form.flag_doc_country ?? "");
+        fd.append("flag_doc_name", form.flag_doc_name ?? "");
+        fd.append("flag_doc_grade", form.flag_doc_grade ?? "");
+        fd.append("endorsement_no", form.endorsement_no ?? "");
+        fd.append("issue_date", form.issue_date ?? "");
+        fd.append("expiry_date", form.expiry_date ?? "");
+        fd.append("processed_by", form.processed_by ?? "");
+        fd.append("remarks", form.remarks ?? "");
+        if (flagStateDocFile) fd.append("file", flagStateDocFile);
+        await axios[method](url, fd);
+      } else if (type === "proposal") {
+        const selectedFiles = Object.values(proposalFiles).filter(Boolean);
+        if (exceedsRequestLimit(selectedFiles)) {
+          alert(`These documents add up to more than ${MAX_REQUEST_UPLOAD_MB} MB. Upload them in smaller batches.`);
+          setGenericModal((prev) => ({ ...prev, saving: false }));
+          return;
+        }
+        const fd = new FormData();
+        [
+          "rank",
+          "vessel_name",
+          "contract_duration",
+          "proposed_wages",
+          "approved_wages",
+          "proposal_date",
+          "proposal_status",
+          "approval_date",
+          "tentative_joining_schedule",
+          "remarks",
+          "tentative_travel_date",
+        ].forEach((k) => fd.append(k, form[k] ?? ""));
+        // Keep legacy `wages` in sync with proposed wages for older consumers.
+        fd.append("wages", form.proposed_wages ?? "");
+        Object.entries(proposalFiles).forEach(([k, file]) => {
+          if (file) fd.append(k, file);
+        });
+        await axios[method](url, fd);
       } else {
         await axios[method](url, form);
       }
@@ -517,7 +879,7 @@ const CandidateDetails = () => {
       closeGenericModal();
       fetchCandidateData();
     } catch (e) {
-      alert(e?.response?.data?.error || e.message);
+      alert(uploadErrorMessage(e));
       setGenericModal((prev) => ({ ...prev, saving: false }));
     }
   };
@@ -654,11 +1016,6 @@ const CandidateDetails = () => {
     return () => document.removeEventListener("mousedown", close);
   }, [exportMenuOpen]);
 
-  // Fetch candidate data on mount
-  useEffect(() => {
-    fetchCandidateData();
-  }, [id]);
-
   useEffect(() => {
     const loadOwners = async () => {
       try {
@@ -686,6 +1043,7 @@ const CandidateDetails = () => {
         setMasterSearchOpts({
           ranks: d.ranks || [],
           vesselTypes: d.vesselTypes || [],
+          engineMakes: d.engineMakes || [],
           availabilityStatus: d.availabilityStatus || [],
           preJoiningMedicalTypes: d.preJoiningMedicalTypes || [],
           preMedicalDocumentTypes: d.preMedicalDocumentTypes || d.preJoiningMedicalTypes || [],
@@ -713,14 +1071,31 @@ const CandidateDetails = () => {
     })();
   }, [showPostSignOnRecordModal, showPostSignOffRecordModal]);
 
-  const fetchCandidateData = async () => {
-    try {
+  const { data: candidateApiData, error: candidateQueryError } = useQuery({
+    queryKey: ["candidate", id],
+    queryFn: async () => {
+      const fast = candidateFetchFastRef.current ? "1" : "0";
+      candidateFetchFastRef.current = false;
       const res = await fetch(
-        `${import.meta.env.VITE_API_URL || ""}/api/candidates/${id}`,
+        `${import.meta.env.VITE_API_URL || ""}/api/candidates/${id}?fast=${fast}`,
         { headers: authHeaders() },
       );
       if (!res.ok) throw new Error("Failed to fetch candidate");
-      const data = await res.json();
+      return res.json();
+    },
+    enabled: Boolean(id),
+  });
+
+  useEffect(() => {
+    if (candidateQueryError) {
+      console.error("Error fetching candidate data:", candidateQueryError);
+    }
+  }, [candidateQueryError]);
+
+  useEffect(() => {
+    if (!candidateApiData) return;
+    try {
+      const data = candidateApiData;
       const candidate = data.candidate || data.data?.candidate || data;
       const apiBase = import.meta.env.VITE_API_URL || "";
 
@@ -752,7 +1127,20 @@ const CandidateDetails = () => {
           : Array.isArray(data.candidate?.flag_state_crew_documents)
             ? data.candidate.flag_state_crew_documents
             : [];
-      setFlagStateCrewDocuments(rawFlagState);
+      const flagCid = candidate?.id ?? data.candidate_id ?? data.candidate?.id;
+      setFlagStateCrewDocuments(
+        rawFlagState.map((doc) => {
+          const rawPath = doc.file_path ?? doc.file_upload;
+          const path = rawPath != null && rawPath !== "" ? String(rawPath) : "";
+          const pathWithoutPublic = path.replace(/^public\/?/, "");
+          const fileName = pathWithoutPublic ? pathWithoutPublic.split("/").pop() : null;
+          const fileUrl =
+            fileName && flagCid
+              ? `${apiBase}/uploads/documents/${flagCid}/${fileName}`
+              : path.startsWith("http") ? path : null;
+          return { ...doc, file_path: fileUrl || path || null };
+        }),
+      );
 
       const rawPreJoiningTravel = Array.isArray(data.pre_joining_travel_docs)
         ? data.pre_joining_travel_docs
@@ -875,7 +1263,10 @@ const CandidateDetails = () => {
 
       const normalized = normalize(candidate);
       setCandidateData(normalized);
-      setFormData(candidate);
+      // Don't clobber in-progress personal-info edits with a background refresh.
+      if (!personalInfoEditingRef.current) {
+        setFormData(candidate);
+      }
       setAdditionalInfo({
         height: normalized.height || "",
         weight: normalized.weight || "",
@@ -899,8 +1290,14 @@ const CandidateDetails = () => {
           (dt) => Number(dt.id) === Number(doc.document_type_id),
         );
 
+        const visaFiles = {};
+        for (const { key } of VISA_DOC_FIELDS) {
+          if (doc[key]) visaFiles[key] = seafarersDocFileUrl(doc[key], candidate.id) || doc[key];
+        }
+
         return {
           ...doc,
+          ...visaFiles,
           document_name: docType?.name || "", // ✅ THIS IS THE FIX
           issue_date: doc.issue_date ? Number(doc.issue_date) * 1000 : null,
           expiry_date: doc.expiry_date ? Number(doc.expiry_date) * 1000 : null,
@@ -1049,9 +1446,83 @@ const CandidateDetails = () => {
         }),
       );
 
+      setCandidateRemarks(
+        (data.candidate_remarks || []).map((row) => ({
+          ...row,
+          file_url: remarkAttachmentUrl(row.file_upload),
+          remarks_text: stripHtmlToText(row.remarks),
+        })),
+      );
+
     } catch (error) {
-      console.error("Error fetching candidate data:", error);
+      console.error("Error applying candidate data:", error);
     }
+  }, [candidateApiData]);
+
+  const fetchCandidateData = async ({ fast = true } = {}) => {
+    candidateFetchFastRef.current = Boolean(fast);
+    // Soft-invalidate list in background; don't block document/personal saves on it.
+    queryClient.invalidateQueries({ queryKey: ["candidates"] });
+    await queryClient.refetchQueries({ queryKey: ["candidate", id] });
+  };
+
+  const applyCandidateProfileLocally = (updated) => {
+    if (!updated || typeof updated !== "object") return;
+    setFormData((prev) => ({ ...prev, ...updated }));
+    setCandidateData((prev) => {
+      const apiBase = import.meta.env.VITE_API_URL || "";
+      const photoName = updated.photo_upload ? String(updated.photo_upload).split("/").pop() : null;
+      const cvName = updated.cv_upload_path ? String(updated.cv_upload_path).split("/").pop() : null;
+      return {
+        ...prev,
+        id: updated.id ?? prev.id,
+        name: [updated.given_name, updated.middle_name, updated.surname].filter(Boolean).join(" ") || prev.name,
+        given_name: updated.given_name ?? prev.given_name,
+        middle_name: updated.middle_name ?? prev.middle_name,
+        surname: updated.surname ?? prev.surname,
+        email: updated.email_id || updated.email || prev.email,
+        email_id: updated.email_id || updated.email || prev.email_id,
+        contact1: updated.contact_no_1 || updated.contact1 || prev.contact1,
+        contact2: updated.contact_no_2 || updated.contact2 || prev.contact2,
+        passport_number: updated.passport_number ?? prev.passport_number,
+        cdc_number: updated.cdc_number ?? prev.cdc_number,
+        indos_number: updated.indos_number ?? prev.indos_number,
+        license: updated.license ?? prev.license,
+        dob: updated.date_of_birth || updated.dob || prev.dob,
+        availability_date: updated.availability_date ?? prev.availability_date,
+        photo: photoName
+          ? `${apiBase}/uploads/documents/${updated.id || prev.id}/${photoName}`
+          : prev.photo,
+        cv: cvName
+          ? `${apiBase}/uploads/documents/${updated.id || prev.id}/${cvName}`
+          : prev.cv,
+        cv_upload_path: updated.cv_upload_path ?? prev.cv_upload_path,
+        raw: { ...(prev?.raw || {}), ...updated },
+      };
+    });
+    applyStatusSyncFromResponse(updated);
+  };
+
+  const applyStatusSyncFromResponse = (data) => {
+    if (!data || data.availability_status_id == null) return;
+    const statusId = data.availability_status_id;
+    const statusName = data.availability_status_name ?? null;
+    setFormData((prev) => ({
+      ...prev,
+      availability_status_id: statusId,
+      availability_status_name: statusName ?? prev.availability_status_name,
+    }));
+    setCandidateData((prev) => ({
+      ...prev,
+      raw: {
+        ...(prev?.raw || {}),
+        availability_status_id: statusId,
+        availability_status_name: statusName ?? prev?.raw?.availability_status_name,
+        availabilityStatus: statusName
+          ? { id: statusId, name: statusName }
+          : prev?.raw?.availabilityStatus,
+      },
+    }));
   };
 
   // Fetch sign-on documents for modal (when signon_id is selected)
@@ -1120,7 +1591,14 @@ const CandidateDetails = () => {
       const fd = new FormData();
       fd.append("signon_id", String(signOnDocSignonId));
       fd.append("document_id", String(documentId));
-      if (fileInput?.files?.length) fd.append("file_path", fileInput.files[0]);
+      if (fileInput?.files?.length) {
+        const file = rejectOversizedFile(fileInput.files[0], fileInput);
+        if (!file) {
+          setSignOnDocUploading(false);
+          return;
+        }
+        fd.append("file_path", file);
+      }
 
       const endpoint = signOnDocEditingId
         ? `${apiBase}/api/candidates/${id}/sign-on-documents/${signOnDocEditingId}`
@@ -1230,6 +1708,115 @@ const CandidateDetails = () => {
   const isAdmin = user?.role === "admin";
   const canAddSignOffRecord = signOffAddEligible || isAdmin;
 
+  const filteredRemarks = useMemo(() => {
+    const q = String(remarksSearch || "").trim().toLowerCase();
+    const rows = Array.isArray(candidateRemarks) ? candidateRemarks : [];
+    if (!q) return rows;
+    return rows.filter((row) => {
+      const hay = [
+        row.remarks_text,
+        row.added_by_name,
+        row.added_by != null ? String(row.added_by) : "",
+        formatRemarkDateTime(row.created_at),
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [candidateRemarks, remarksSearch]);
+
+  const toggleRemarkExpanded = (remarkId) => {
+    setExpandedRemarkIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(remarkId)) next.delete(remarkId);
+      else next.add(remarkId);
+      return next;
+    });
+  };
+
+  const openRemarkModal = (row = null) => {
+    if (row?.id != null && !isAdmin) {
+      alert("Only admins can edit communication notes.");
+      return;
+    }
+    setRemarkModal({
+      open: true,
+      editingId: row?.id ?? null,
+      remarks: row ? (row.remarks_text || stripHtmlToText(row.remarks) || "") : "",
+      file: null,
+      saving: false,
+    });
+  };
+
+  const closeRemarkModal = () => {
+    setRemarkModal({ open: false, editingId: null, remarks: "", file: null, saving: false });
+  };
+
+  const handleSaveRemark = async () => {
+    const text = String(remarkModal.remarks || "").trim();
+    if (!text) {
+      alert("Remark is required.");
+      return;
+    }
+    if (remarkModal.editingId && !isAdmin) {
+      alert("Only admins can edit communication notes.");
+      return;
+    }
+    setRemarkModal((prev) => ({ ...prev, saving: true }));
+    try {
+      const apiBase = import.meta.env.VITE_API_URL || "";
+      const fd = new FormData();
+      fd.append("remark", text);
+      if (remarkModal.file) {
+        const file = rejectOversizedFile(remarkModal.file);
+        if (!file) {
+          setRemarkModal((prev) => ({ ...prev, saving: false }));
+          return;
+        }
+        fd.append("file_upload", file);
+      }
+      if (remarkModal.editingId) {
+        await axios.put(`${apiBase}/api/candidates/${id}/remarks/${remarkModal.editingId}`, fd);
+      } else {
+        await axios.post(`${apiBase}/api/candidates/${id}/remarks`, fd);
+      }
+      closeRemarkModal();
+      fetchCandidateData();
+    } catch (e) {
+      alert(e?.response?.data?.error || e.message || "Failed to save remark");
+      setRemarkModal((prev) => ({ ...prev, saving: false }));
+    }
+  };
+
+  const handleDeleteRemark = async (remarkId) => {
+    if (!isAdmin) {
+      alert("Only admins can delete communication notes.");
+      return;
+    }
+    if (!window.confirm("Delete this remark?")) return;
+    try {
+      const apiBase = import.meta.env.VITE_API_URL || "";
+      await axios.delete(`${apiBase}/api/candidates/${id}/remarks/${remarkId}`);
+      fetchCandidateData();
+    } catch (e) {
+      alert(e?.response?.data?.error || e.message || "Failed to delete remark");
+    }
+  };
+
+  const handleSaveFollowupDate = async () => {
+    try {
+      const apiBase = import.meta.env.VITE_API_URL || "";
+      await axios.put(`${apiBase}/api/candidates/${id}`, {
+        followup_date: formData.followup_date ?? "",
+      });
+      alert("Follow-up date saved");
+      fetchCandidateData();
+    } catch (e) {
+      alert(e?.response?.data?.error || e.message);
+    }
+  };
+
   const nToday = new Date();
   const todayYmdLocal = `${nToday.getFullYear()}-${String(nToday.getMonth() + 1).padStart(2, "0")}-${String(nToday.getDate()).padStart(2, "0")}`;
 
@@ -1250,6 +1837,10 @@ const CandidateDetails = () => {
   };
 
   const openEditPostSignOnRecordModal = (row) => {
+    if (!isAdmin) {
+      alert("Only admins can edit sign-on records.");
+      return;
+    }
     setPostSignOnRecordEditingId(row?.id ?? null);
     setPostSignOnRecordForm({
       vessel_name: row?.vessel_name ?? "",
@@ -1271,6 +1862,11 @@ const CandidateDetails = () => {
   const submitPostSignOnRecord = async (e) => {
     e.preventDefault();
     if (!id) return;
+    const isEdit = postSignOnRecordEditingId != null;
+    if (isEdit && !isAdmin) {
+      alert("Only admins can edit sign-on records.");
+      return;
+    }
     setPostSignOnRecordSaving(true);
     try {
       const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
@@ -1288,8 +1884,6 @@ const CandidateDetails = () => {
         sign_off_due: postSignOnRecordForm.sign_off_due,
         remark: postSignOnRecordForm.remark,
       };
-
-      const isEdit = postSignOnRecordEditingId != null;
       const endpoint = isEdit
         ? `${apiBase}/api/candidates/${id}/post-sign-on-documents/${postSignOnRecordEditingId}`
         : `${apiBase}/api/candidates/${id}/post-sign-on-documents`;
@@ -1306,6 +1900,8 @@ const CandidateDetails = () => {
         throw new Error(data.error || "Failed to save sign-on record");
       }
 
+      const saved = await res.json().catch(() => ({}));
+      applyStatusSyncFromResponse(saved);
       setShowPostSignOnRecordModal(false);
       setPostSignOnRecordEditingId(null);
       await fetchCandidateData();
@@ -1317,6 +1913,10 @@ const CandidateDetails = () => {
   };
 
   const handleDeletePostSignOnRecord = async (rowId) => {
+    if (!isAdmin) {
+      alert("Only admins can delete sign-on records.");
+      return;
+    }
     if (!window.confirm("Delete this sign-on record?")) return;
     try {
       const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
@@ -1328,6 +1928,8 @@ const CandidateDetails = () => {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Failed to delete sign-on record");
       }
+      const deleted = await res.json().catch(() => ({}));
+      applyStatusSyncFromResponse(deleted);
       await fetchCandidateData();
     } catch (err) {
       alert(err?.message || "Failed to delete sign-on record");
@@ -1354,17 +1956,29 @@ const CandidateDetails = () => {
   };
 
   const openAddPostSignOffRecordModal = () => {
+    const rows = Array.isArray(postSignOnDocs) ? postSignOnDocs : [];
+    // Prefer the most recent sign-on by sign-on date (then id) so shared fields can be prefilled.
+    const lastSignOn = [...rows].sort((a, b) => {
+      const da = toLocalDateFromApi(a?.sign_on_date)?.getTime() ?? 0;
+      const db = toLocalDateFromApi(b?.sign_on_date)?.getTime() ?? 0;
+      if (db !== da) return db - da;
+      return Number(b?.id || 0) - Number(a?.id || 0);
+    })[0] || null;
+
     setPostSignOffRecordEditingId(null);
     setPostSignOffRecordForm({
-      vessel_name: "",
-      imo_number: "",
-      sign_off_rank: "",
-      sign_on_date: "",
+      vessel_name: lastSignOn?.vessel_name ?? "",
+      imo_number: lastSignOn?.imo_number != null ? String(lastSignOn.imo_number) : "",
+      sign_off_rank:
+        lastSignOn?.sign_on_rank != null && String(lastSignOn.sign_on_rank).trim() !== ""
+          ? String(lastSignOn.sign_on_rank)
+          : "",
+      sign_on_date: toDateInputValue(lastSignOn?.sign_on_date),
       sign_off_date: "",
       sign_off_port: "",
-      country_id: "",
+      country_id: lastSignOn?.country_id != null ? String(lastSignOn.country_id) : "",
       arrival_date: "",
-      contract_completion_date: "",
+      contract_completion_date: toDateInputValue(lastSignOn?.sign_off_due),
       sign_off_reason: "",
       remark: "",
     });
@@ -1372,6 +1986,10 @@ const CandidateDetails = () => {
   };
 
   const openEditPostSignOffRecordModal = (row) => {
+    if (!isAdmin) {
+      alert("Only admins can edit sign-off records.");
+      return;
+    }
     setPostSignOffRecordEditingId(row?.id ?? null);
     setPostSignOffRecordForm({
       vessel_name: row?.vessel_name ?? "",
@@ -1396,6 +2014,10 @@ const CandidateDetails = () => {
     e.preventDefault();
     if (!id) return;
     const isEdit = postSignOffRecordEditingId != null;
+    if (isEdit && !isAdmin) {
+      alert("Only admins can edit sign-off records.");
+      return;
+    }
     if (!isEdit && !signOffAddEligible && !isAdmin) {
       alert(
         "You can add a sign-off only after the due sign-off date from a Sign On record has been reached.",
@@ -1438,6 +2060,8 @@ const CandidateDetails = () => {
         throw new Error(data.error || "Failed to save sign-off record");
       }
 
+      const saved = await res.json().catch(() => ({}));
+      applyStatusSyncFromResponse(saved);
       setShowPostSignOffRecordModal(false);
       setPostSignOffRecordEditingId(null);
       await fetchCandidateData();
@@ -1449,6 +2073,10 @@ const CandidateDetails = () => {
   };
 
   const handleDeletePostSignOffRecord = async (rowId) => {
+    if (!isAdmin) {
+      alert("Only admins can delete sign-off records.");
+      return;
+    }
     if (!window.confirm("Delete this sign-off record?")) return;
     try {
       const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
@@ -1474,8 +2102,18 @@ const CandidateDetails = () => {
 
   const handleBasicDetailsFileChange = (e) => {
     const { name, files } = e.target;
-    const file = files?.[0];
+    const file = rejectOversizedFile(files?.[0], e.target);
     if (!file || !name) return;
+    if (name === "photo_upload") {
+      setBasicPhotoFile(file);
+      setFormData((prev) => ({ ...prev, photo_upload: file.name }));
+      return;
+    }
+    if (name === "cv_upload") {
+      setBasicCvFile(file);
+      setFormData((prev) => ({ ...prev, cv_upload: file.name, cv_upload_path: file.name }));
+      return;
+    }
     setFormData((prev) => ({ ...prev, [name]: file.name }));
   };
 
@@ -1488,6 +2126,7 @@ const CandidateDetails = () => {
   // Submit basic details form
   const handleBasicDetailsSubmit = async (e) => {
     e.preventDefault();
+    if (!isAdmin || !personalInfoEditingRef.current) return;
     const passportExpiryErr = requireCompleteDate(formData.passport_expiry_date, "Passport expiry date");
     if (passportExpiryErr) {
       alert(passportExpiryErr);
@@ -1498,6 +2137,7 @@ const CandidateDetails = () => {
       alert(cdcExpiryErr);
       return;
     }
+    setPersonalInfoSaving(true);
     try {
       const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
       // Only send fields that the backend whitelists for update.
@@ -1539,12 +2179,57 @@ const CandidateDetails = () => {
         contact_no_2: formData.contact_no_2,
       };
 
-      await axios.put(`${apiBase}/api/candidates/${id}`, payload);
-      alert("Candidate updated successfully");
-      fetchCandidateData();
+      const hasFiles = Boolean(basicPhotoFile || basicCvFile);
+      let updated = null;
+      if (hasFiles) {
+        const fd = new FormData();
+        Object.entries(payload).forEach(([k, v]) => {
+          if (v === undefined || v === null) return;
+          fd.append(k, String(v));
+        });
+        if (basicPhotoFile) fd.append("photo_upload", basicPhotoFile);
+        if (basicCvFile) fd.append("cv_upload", basicCvFile);
+        const res = await axios.put(`${apiBase}/api/candidates/${id}`, fd);
+        updated = res?.data?.candidate || null;
+      } else {
+        // Prefer JSON when no files — avoids multipart/nginx 413 issues on AWS.
+        const res = await axios.put(`${apiBase}/api/candidates/${id}`, payload);
+        updated = res?.data?.candidate || null;
+      }
+      setBasicPhotoFile(null);
+      setBasicCvFile(null);
+      if (updated) applyCandidateProfileLocally(updated);
+      personalInfoEditingRef.current = false;
+      setPersonalInfoEditing(false);
+      setPersonalInfoSnapshot(null);
+      // Refresh list quietly; avoid blocking the UI on a full candidate reload.
+      queryClient.invalidateQueries({ queryKey: ["candidates"] });
+      if (hasFiles) {
+        // Photo/CV URLs may need a quick background refresh.
+        fetchCandidateData({ fast: true }).catch(() => {});
+      }
     } catch (error) {
       setErrors(error.response?.data?.errors || []);
+      alert(uploadErrorMessage(error, "Failed to update candidate"));
+    } finally {
+      setPersonalInfoSaving(false);
     }
+  };
+
+  const startPersonalInfoEdit = () => {
+    if (!isAdmin) return;
+    setPersonalInfoSnapshot({ ...formData });
+    personalInfoEditingRef.current = true;
+    setPersonalInfoEditing(true);
+  };
+
+  const cancelPersonalInfoEdit = () => {
+    if (personalInfoSnapshot) setFormData(personalInfoSnapshot);
+    setBasicPhotoFile(null);
+    setBasicCvFile(null);
+    personalInfoEditingRef.current = false;
+    setPersonalInfoEditing(false);
+    setPersonalInfoSnapshot(null);
   };
 
   // Submit additional info
@@ -1617,73 +2302,6 @@ const CandidateDetails = () => {
     return `${inclusive} day${inclusive !== 1 ? "s" : ""}`;
   };
 
-  // Match `SignOnSignOffReport.jsx` status logic:
-  // If today is within [sign_on_date, sign_off_due] => On-board, else On-Leave.
-  // Also account for separate sign-off records: if sign-off date is already passed => On-Leave.
-  const getStatusFromSignOnDocs = () => {
-    const toEpochMillis = (val) => {
-      if (val === null || val === undefined || val === "") return null;
-      if (typeof val === "number") {
-        // Most of our "epoch seconds" columns come as seconds
-        return val < 1e12 ? val * 1000 : val;
-      }
-      const s = String(val).trim();
-      if (!s) return null;
-      if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
-        const d = new Date(`${s}T00:00:00.000Z`);
-        const ms = d.getTime();
-        return Number.isNaN(ms) ? null : ms;
-      }
-      if (/^\d+(\.\d+)?$/.test(s)) {
-        const n = Number(s);
-        return Number.isNaN(n) ? null : (n < 1e12 ? n * 1000 : n);
-      }
-      const ms = new Date(val).getTime();
-      return Number.isNaN(ms) ? null : ms;
-    };
-
-    const startOfDay = (ms) => {
-      const d = new Date(ms);
-      d.setHours(0, 0, 0, 0);
-      return d.getTime();
-    };
-
-    const signOnDocs = Array.isArray(postSignOnDocs) ? postSignOnDocs : [];
-    const signOffDocs = Array.isArray(postSignOffDocs) ? postSignOffDocs : [];
-    if (!signOnDocs.length && !signOffDocs.length) return null;
-
-    const todayStart = startOfDay(Date.now());
-
-    // If any sign-off date is already before today => On-Leave.
-    const hasPassedSignOff = signOffDocs.some((d) => {
-      const signOffMillis = toEpochMillis(d?.sign_off_date ?? d?.sign_off_due);
-      if (!signOffMillis) return false;
-      const signOffDay = startOfDay(signOffMillis);
-      return todayStart > signOffDay;
-    });
-    if (hasPassedSignOff) return "On-Leave";
-
-    // Otherwise decide using sign-on period.
-    const isOnBoard = signOnDocs.some((d) => {
-      const signOnMillis = toEpochMillis(d?.sign_on_date);
-      const signOffDueMillis = toEpochMillis(d?.sign_off_due);
-      if (!signOnMillis || !signOffDueMillis) return false;
-      const signOnDay = startOfDay(signOnMillis);
-      const signOffDueDay = startOfDay(signOffDueMillis);
-      return todayStart >= signOnDay && todayStart <= signOffDueDay;
-    });
-    if (isOnBoard) return "On-board with us";
-
-    // If we only have sign-off records (no sign-on docs), treat as On-board until sign-off day.
-    const hasFutureSignOff = signOffDocs.some((d) => {
-      const signOffMillis = toEpochMillis(d?.sign_off_date ?? d?.sign_off_due);
-      if (!signOffMillis) return false;
-      const signOffDay = startOfDay(signOffMillis);
-      return todayStart <= signOffDay;
-    });
-    return hasFutureSignOff ? "On-board with us" : "On-Leave";
-  };
-
   const openSeafarersModal = (partial) =>
     setSeafarersModal({
       open: true,
@@ -1740,16 +2358,16 @@ const CandidateDetails = () => {
 
   return (
     <div className="candidate-details-container">
-      {/* Back to list */}
+      {/* Back navigation — reports vs candidates stay separate */}
       <button
         type="button"
-        onClick={() => navigate("/admin/candidates")}
+        onClick={() => navigate(backToPath)}
         className="back-to-list-btn"
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{flexShrink:0}}>
           <path d="M10 12L6 8l4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
-        Back to Candidates
+        {backLabel}
       </button>
 
       {/* Error Display */}
@@ -1792,23 +2410,11 @@ const CandidateDetails = () => {
 
           <div className="summary-grid">
             <div className="summary-item">
-              <span className="summary-label">Email</span>
-              <span className="summary-value">
-                {candidateData.email_id || "N/A"}
-              </span>
-            </div>
-            <div className="summary-item">
-              <span className="summary-label">Phone</span>
-              <span className="summary-value">
-                {candidateData.contact1 || "N/A"}
-              </span>
-            </div>
-            <div className="summary-item">
               <span className="summary-label">Status</span>
               <span className="summary-value">
                 {(() => {
                   const label = resolveAvailabilityStatusLabel(
-                    candidateData.raw,
+                    candidateData.raw || formData,
                     masterSearchOpts.availabilityStatus,
                   );
                   if (label) {
@@ -1818,16 +2424,20 @@ const CandidateDetails = () => {
                       </span>
                     );
                   }
-                  const recordStatus = getStatusFromSignOnDocs();
-                  if (recordStatus) {
-                    return (
-                      <span className={`status-badge-pill status-badge-pill--prominent ${availabilityTone(recordStatus)}`}>
-                        ● {recordStatus}
-                      </span>
-                    );
-                  }
                   return <span className="status-badge-pill status-badge-pill--prominent status-badge--neutral">● N/A</span>;
                 })()}
+              </span>
+            </div>
+            <div className="summary-item">
+              <span className="summary-label">Email</span>
+              <span className="summary-value">
+                {candidateData.email_id || "N/A"}
+              </span>
+            </div>
+            <div className="summary-item">
+              <span className="summary-label">Phone</span>
+              <span className="summary-value">
+                {candidateData.contact1 || "N/A"}
               </span>
             </div>
             <div className="summary-item">
@@ -1853,7 +2463,14 @@ const CandidateDetails = () => {
             <div className="summary-item">
               <span className="summary-label">License</span>
               <span className="summary-value">
-                {candidateData.license || "N/A"}
+                {(() => {
+                  const cocNumbers = (licenses || [])
+                    .filter((l) => String(l?.type || "").toLowerCase() === "certificate_of_competency")
+                    .map((l) => String(l.document_number || "").trim())
+                    .filter(Boolean);
+                  if (cocNumbers.length) return cocNumbers.join(", ");
+                  return candidateData.license || "N/A";
+                })()}
               </span>
             </div>
             <div className="summary-item">
@@ -2120,8 +2737,15 @@ const CandidateDetails = () => {
               handleInputChange={handleInputChange}
               handleSubmit={handleBasicDetailsSubmit}
               handleFileChange={handleBasicDetailsFileChange}
+              basicPhotoFile={basicPhotoFile}
+              basicCvFile={basicCvFile}
               countries={countries}
               masterSearchOpts={masterSearchOpts}
+              editing={personalInfoEditing}
+              saving={personalInfoSaving}
+              canEdit={isAdmin}
+              onStartEdit={startPersonalInfoEdit}
+              onCancelEdit={cancelPersonalInfoEdit}
             />
           )}
 
@@ -2304,6 +2928,7 @@ const CandidateDetails = () => {
           {/* Visa Section */}
           {activeSeafarersTab === "Visa" && (
             <VisaSection
+              candidateId={id}
               seafarersDocs={seafarersDocs}
               onAddNew={() => openSeafarersModal({ fixedType: "VISA Copy" })}
               onDelete={(docId) => handleDeleteDocument(docId, "seafarers")}
@@ -2376,7 +3001,7 @@ const CandidateDetails = () => {
                       <th>GRT</th>
                       <th>DWT</th>
                       <th>BHP</th>
-                      <th>Engine Type</th>
+                      <th>Engine Make/Type</th>
                       <th>Sign on Date</th>
                       <th>Sign off Date</th>
                       <th>Period</th>
@@ -2388,7 +3013,7 @@ const CandidateDetails = () => {
                   <tbody>
                     {seaServicesPage.rows.map((row) => (
                       <tr key={row.id}>
-                        <AuditCell record={row}>{row.rank_name ?? row.rank ?? "-"}</AuditCell>
+                        <td>{row.rank_name ?? row.rank ?? "-"}</td>
                         <td>{row.vessel_name ?? "-"}</td>
                         <td>{row.flag ?? "-"}</td>
                         <td>{row.vessel_type_name ?? row.vessel_type ?? "-"}</td>
@@ -2401,11 +3026,11 @@ const CandidateDetails = () => {
                         <td>{row.period ?? "-"}</td>
                         <td>{row.reason_of_sign_off ?? "-"}</td>
                         <td title={row.owner_company}>{row.owner_company ? (String(row.owner_company).length > 15 ? `${String(row.owner_company).slice(0, 15)}...` : row.owner_company) : "-"}</td>
-                        <td>
-                          <div className="action-icons-toolbar">
+                        <td className="action-cell-with-audit">
+                          <ActionToolbar record={row}>
                             <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("services", row)}><i className="fas fa-pen" /></button>
                             <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleGenericDelete("services", row.id)}><i className="fas fa-trash" /></button>
-                          </div>
+                          </ActionToolbar>
                         </td>
                       </tr>
                     ))}
@@ -2450,44 +3075,55 @@ const CandidateDetails = () => {
                       <th>Rank</th>
                       <th>Vessel Name</th>
                       <th>Contract Duration</th>
-                      <th>Tentative Joining Schedule</th>
-                      <th>Wages</th>
-                      <th>Proposal Status</th>
+                      <th>Proposed Wages (USD)</th>
+                      <th>Approved Wages (USD)</th>
                       <th>Proposal Date</th>
+                      <th>Proposal Status</th>
                       <th>Approval Date</th>
-                      <th>Rejection / Cancellation</th>
+                      <th>Tentative Joining Schedule</th>
+                      <th>Remarks</th>
+                      <th>Documents</th>
                       <th>Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {planingsPage.rows.map((row) => (
+                    {planingsPage.rows.map((row) => {
+                      const rowDocs = proposalDocumentsFor(row, id);
+                      return (
                       <tr key={row.id}>
-                        <AuditCell record={row}>{row.rank_name ?? row.rank ?? "-"}</AuditCell>
+                        <td>{row.rank_name ?? row.rank ?? "-"}</td>
                         <td>{row.vessel_name ?? "-"}</td>
                         <td>{row.contract_duration ?? "-"}</td>
-                        <td>{row.tentative_joining_schedule ? formatServiceDate(row.tentative_joining_schedule) : "-"}</td>
-                        <td title={row.wages}>{row.wages ?? "-"}</td>
-                        <td>{row.proposal_status ? String(row.proposal_status).replace(/_/g, " ") : "-"}</td>
+                        <td>{row.proposed_wages || row.wages || "-"}</td>
+                        <td>{row.approved_wages || "-"}</td>
                         <td>{row.proposal_date ? formatServiceDate(row.proposal_date) : "-"}</td>
+                        <td>{proposalStatusLabel(row.proposal_status)}</td>
                         <td>{row.approval_date ? formatServiceDate(row.approval_date) : "-"}</td>
-                        <td>{row.tentative_travel_date ? formatServiceDate(row.tentative_travel_date) : "-"}</td>
+                        <td>{row.tentative_joining_schedule ? formatServiceDate(row.tentative_joining_schedule) : "-"}</td>
+                        <td title={row.remarks || ""}>{row.remarks ? String(row.remarks).slice(0, 40) + (String(row.remarks).length > 40 ? "…" : "") : "-"}</td>
                         <td>
-                          <div className="action-icons-toolbar">
+                          {rowDocs.length ? (
+                            <button
+                              type="button"
+                              className="doc-view-trigger"
+                              onClick={() => openProposalDocViewer(row)}
+                              title={`View ${rowDocs.length} document${rowDocs.length > 1 ? "s" : ""}`}
+                            >
+                              <i className="fas fa-folder-open" aria-hidden="true" />
+                              View
+                              <span className="doc-view-count">{rowDocs.length}</span>
+                            </button>
+                          ) : "-"}
+                        </td>
+                        <td className="action-cell-with-audit">
+                          <ActionToolbar record={row}>
                             <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("proposal", row)}><i className="fas fa-pen" /></button>
-                            {row.upload_file && (
-                              <a
-                                href={String(row.upload_file).startsWith("http") ? row.upload_file : `${import.meta.env.VITE_API_URL || ""}/uploads/documents/${id}/${String(row.upload_file).replace(/^\/+/, "")}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="action-icon-btn action-icon-view"
-                                title="View"
-                              ><i className="fas fa-eye" /></a>
-                            )}
                             <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleGenericDelete("proposal", row.id)}><i className="fas fa-trash" /></button>
-                          </div>
+                          </ActionToolbar>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2538,13 +3174,13 @@ const CandidateDetails = () => {
                   <tbody>
                     {medicalsPage.rows.map((row) => (
                       <tr key={row.id}>
-                        <AuditCell record={row}>
+                        <td>
                           {(masterSearchOpts.preMedicalDocumentTypes || masterSearchOpts.preJoiningMedicalTypes || [])
                             .find((m) => String(m.id) === String(row.medical_id))?.name
                             ?? (documentTypes || []).find((dt) => String(dt.id) === String(row.medical_id))?.name
                             ?? row.document_name
                             ?? (row.medical_id != null && row.medical_id !== "" ? `#${row.medical_id}` : "-")}
-                        </AuditCell>
+                        </td>
                         <td>{row.certificate_number ?? "-"}</td>
                         <td>{resolveCountryName(row)}</td>
                         <td>{row.issue_date ? formatServiceDate(row.issue_date) : "-"}</td>
@@ -2560,11 +3196,11 @@ const CandidateDetails = () => {
                             </a>
                           ) : "-"}
                         </td>
-                        <td>
-                          <div className="action-icons-toolbar">
+                        <td className="action-cell-with-audit">
+                          <ActionToolbar record={row}>
                             <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("medicals", row)}><i className="fas fa-pen" /></button>
                             <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleGenericDelete("medicals", row.id)}><i className="fas fa-trash" /></button>
-                          </div>
+                          </ActionToolbar>
                         </td>
                       </tr>
                     ))}
@@ -2606,27 +3242,49 @@ const CandidateDetails = () => {
                 <table className="basic-detail-table flag-state-table">
                   <thead>
                     <tr>
-                      <th>Flag Doc Country</th>
-                      <th>Flag Doc Name</th>
-                      <th>Flag Doc Grade</th>
-                      <th>Issue Date</th>
-                      <th>Expiry Date</th>
+                      <th>Flag State Country</th>
+                      <th>COE/Documents Name</th>
+                      <th>Grade/Capacity</th>
+                      <th>Endorsement No</th>
+                      <th>Issue Date (Endo)</th>
+                      <th>Expiry Date (Endo)</th>
+                      <th>Processed by / Agent</th>
+                      <th>Remarks</th>
+                      <th>Document</th>
                       <th>Action</th>
                     </tr>
                   </thead>
                   <tbody>
                     {flagStatePage.rows.map((row) => (
                       <tr key={row.id}>
-                        <AuditCell record={row}>{row.flag_doc_country ?? "-"}</AuditCell>
+                        <td>{row.flag_doc_country ?? "-"}</td>
                         <td>{row.flag_doc_name ?? "-"}</td>
-                        <td>{row.flag_doc_grade ?? "-"}</td>
+                        <td>{labelForLicenceCapacity(row.flag_doc_grade) || "-"}</td>
+                        <td>{row.endorsement_no ?? "-"}</td>
                         <td>{row.issue_date ? formatServiceDate(row.issue_date) : "-"}</td>
                         <td>{row.expiry_date ? formatServiceDate(row.expiry_date) : "-"}</td>
+                        <td>{row.processed_by ?? "-"}</td>
+                        <td title={row.remarks || undefined}>
+                          {row.remarks
+                            ? (String(row.remarks).length > 40 ? `${String(row.remarks).slice(0, 40)}…` : row.remarks)
+                            : "-"}
+                        </td>
                         <td>
-                          <div className="action-icons-toolbar">
+                          {row.file_path ? (
+                            <a
+                              href={String(row.file_path).startsWith("http") ? row.file_path : `${import.meta.env.VITE_API_URL || ""}/uploads/documents/${id}/${String(row.file_path || "").replace(/^\/+/, "").split("/").pop()}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              View
+                            </a>
+                          ) : "-"}
+                        </td>
+                        <td className="action-cell-with-audit">
+                          <ActionToolbar record={row}>
                             <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("flagstate", row)}><i className="fas fa-pen" /></button>
                             <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleGenericDelete("flagstate", row.id)}><i className="fas fa-trash" /></button>
-                          </div>
+                          </ActionToolbar>
                         </td>
                       </tr>
                     ))}
@@ -2645,7 +3303,6 @@ const CandidateDetails = () => {
             ) : (
               <div className="tab-placeholder">
                 <p>No flag state crew documents found.</p>
-                <p className="text-muted small">Add records via backend or when Add New is available.</p>
               </div>
             )}
           </div>
@@ -2679,12 +3336,12 @@ const CandidateDetails = () => {
                   <tbody>
                     {travelDocsPage.rows.map((row) => (
                       <tr key={row.id}>
-                        <AuditCell record={row}>
+                        <td>
                           {(masterSearchOpts.preJoiningTravelDocumentTypes || [])
                             .find((t) => String(t.id) === String(row.document_id))?.name
                             ?? row.document_name
                             ?? (row.document_id != null && row.document_id !== "" ? `#${row.document_id}` : "-")}
-                        </AuditCell>
+                        </td>
                         <td>{resolveCountryName(row)}</td>
                         <td>{row.issue_date ? formatServiceDate(row.issue_date) : "-"}</td>
                         <td>{row.expiry_date ? formatServiceDate(row.expiry_date) : "-"}</td>
@@ -2699,11 +3356,11 @@ const CandidateDetails = () => {
                             </a>
                           ) : "-"}
                         </td>
-                        <td>
-                          <div className="action-icons-toolbar">
+                        <td className="action-cell-with-audit">
+                          <ActionToolbar record={row}>
                             <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("prejoining", row)}><i className="fas fa-pen" /></button>
                             <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleGenericDelete("prejoining", row.id)}><i className="fas fa-trash" /></button>
-                          </div>
+                          </ActionToolbar>
                         </td>
                       </tr>
                     ))}
@@ -2766,7 +3423,7 @@ const CandidateDetails = () => {
                   <tbody>
                     {signOnPage.rows.map((row) => (
                       <tr key={row.id}>
-                        <AuditCell record={row}>{row.vessel_name ?? "-"}</AuditCell>
+                        <td>{row.vessel_name ?? "-"}</td>
                         <td>{row.imo_number ?? "-"}</td>
                         <td>{row.rank_name ?? row.sign_on_rank ?? row.rank ?? "-"}</td>
                         <td>{row.contract_start_date ? formatServiceDate(row.contract_start_date) : "-"}</td>
@@ -2795,12 +3452,16 @@ const CandidateDetails = () => {
                             {row.remark ? String(row.remark).slice(0, 30) + (String(row.remark).length > 30 ? "..." : "") : "-"}
                           </span>
                         </td>
-                        <td>
-                          <div className="action-icons-toolbar">
-                            <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openEditPostSignOnRecordModal(row)}><i className="fas fa-pen" /></button>
+                        <td className="action-cell-with-audit">
+                          <ActionToolbar record={row}>
+                            {isAdmin && (
+                              <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openEditPostSignOnRecordModal(row)}><i className="fas fa-pen" /></button>
+                            )}
                             <button type="button" className="action-icon-btn action-icon-docs" title="Documents" onClick={() => openSignOnDocModal(row.id)}><i className="fas fa-file-alt" /></button>
-                            <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleDeletePostSignOnRecord(row.id)}><i className="fas fa-trash" /></button>
-                          </div>
+                            {isAdmin && (
+                              <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleDeletePostSignOnRecord(row.id)}><i className="fas fa-trash" /></button>
+                            )}
+                          </ActionToolbar>
                         </td>
                       </tr>
                     ))}
@@ -2875,7 +3536,7 @@ const CandidateDetails = () => {
                   <tbody>
                     {signOffPage.rows.map((row) => (
                       <tr key={row.id}>
-                        <AuditCell record={row}>{row.vessel_name ?? "-"}</AuditCell>
+                        <td>{row.vessel_name ?? "-"}</td>
                         <td>{row.imo_number ?? "-"}</td>
                         <td>{row.rank_name ?? row.sign_off_rank ?? row.sign_off_rank_id ?? "-"}</td>
                         <td>{row.sign_on_date ? formatServiceDate(row.sign_on_date) : "-"}</td>
@@ -2905,11 +3566,17 @@ const CandidateDetails = () => {
                             {row.remark ? String(row.remark).slice(0, 30) + (String(row.remark).length > 30 ? "..." : "") : "-"}
                           </span>
                         </td>
-                        <td>
-                          <div className="action-icons-toolbar">
-                            <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openEditPostSignOffRecordModal(row)}><i className="fas fa-pen" /></button>
-                            <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleDeletePostSignOffRecord(row.id)}><i className="fas fa-trash" /></button>
-                          </div>
+                        <td className="action-cell-with-audit">
+                          <ActionToolbar record={row}>
+                            {isAdmin ? (
+                              <>
+                                <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openEditPostSignOffRecordModal(row)}><i className="fas fa-pen" /></button>
+                                <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleDeletePostSignOffRecord(row.id)}><i className="fas fa-trash" /></button>
+                              </>
+                            ) : (
+                              <span className="text-muted small">—</span>
+                            )}
+                          </ActionToolbar>
                         </td>
                       </tr>
                     ))}
@@ -2938,44 +3605,275 @@ const CandidateDetails = () => {
       {/* Communication - Remarks */}
       {activeMainTab === "remarks" && (
         <div className="tab-content">
-          <div className="tab-content-section">
-            <h6 className="tab-section-title">Candidate Remarks / Communication</h6>
-            <div style={{ maxWidth: 700 }}>
-              <div className="form-group" style={{ marginBottom: 16 }}>
-                <label style={{ fontWeight: 700, fontSize: 13, color: "#0f172a", marginBottom: 6, display: "block" }}>Follow-up Date</label>
-                <input
-                  type="date"
-                  className="form-control"
-                  style={{ maxWidth: 260 }}
-                  value={formatDateForInput(formData.followup_date)}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, followup_date: e.target.value }))}
-                />
+          <div className="tab-content-section remarks-section">
+            <div className="remarks-toolbar">
+              <div className="remarks-toolbar-left">
+                <h6 className="tab-section-title" style={{ margin: 0 }}>Communication</h6>
+                <span className="remarks-count-pill">
+                  {filteredRemarks.length}
+                  {remarksSearch.trim() && filteredRemarks.length !== candidateRemarks.length
+                    ? ` / ${candidateRemarks.length}`
+                    : ""}{" "}
+                  notes
+                </span>
               </div>
+              <div className="remarks-toolbar-right">
+                <input
+                  type="search"
+                  className="form-control remarks-search"
+                  placeholder="Search notes, author, date…"
+                  value={remarksSearch}
+                  onChange={(e) => setRemarksSearch(e.target.value)}
+                  aria-label="Search communication notes"
+                />
+                <button type="button" className="btn btn-sm btn-info" onClick={() => openRemarkModal()}>
+                  Add Remark
+                </button>
+              </div>
+            </div>
+
+            <div className="remarks-followup-bar">
+              <label className="remarks-followup-label" htmlFor="remarks-followup-date">
+                Follow-up date
+              </label>
+              <input
+                id="remarks-followup-date"
+                type="date"
+                className="form-control remarks-followup-input"
+                value={formatDateForInput(formData.followup_date)}
+                onChange={(e) => setFormData((prev) => ({ ...prev, followup_date: e.target.value }))}
+              />
+              <button type="button" className="btn btn-sm btn-primary" onClick={handleSaveFollowupDate}>
+                Save
+              </button>
+            </div>
+
+            {filteredRemarks.length > 0 ? (
+              <div className="remarks-feed" role="list">
+                {filteredRemarks.map((row) => {
+                  const text = String(row.remarks_text || "").trim();
+                  const expanded = expandedRemarkIds.has(row.id);
+                  const lineCount = text ? text.split(/\n/).length : 0;
+                  const long = text.length > 320 || lineCount > 5;
+                  return (
+                    <article
+                      key={row.id}
+                      className={`remarks-card${expanded ? " is-expanded" : ""}`}
+                      role="listitem"
+                    >
+                      <div className="remarks-card-rail" aria-hidden="true" />
+                      <div className="remarks-card-body">
+                        <header className="remarks-card-meta">
+                          <div className="remarks-card-actions action-audit-hover">
+                            {row.file_url ? (
+                              <a
+                                href={row.file_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="remarks-file-link"
+                                title="Open attachment"
+                              >
+                                <i className="fas fa-paperclip" aria-hidden="true" /> Attachment
+                              </a>
+                            ) : null}
+                            {isAdmin ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="action-icon-btn action-icon-edit"
+                                  title="Edit"
+                                  onClick={() => openRemarkModal(row)}
+                                >
+                                  <i className="fas fa-pen" />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="action-icon-btn action-icon-delete"
+                                  title="Delete"
+                                  onClick={() => handleDeleteRemark(row.id)}
+                                >
+                                  <i className="fas fa-trash" />
+                                </button>
+                              </>
+                            ) : (
+                              <span
+                                className="action-icon-btn action-icon-audit"
+                                title="Audit"
+                                aria-label="Audit details"
+                                tabIndex={0}
+                              >
+                                <i className="fas fa-clock" aria-hidden="true" />
+                              </span>
+                            )}
+                            <RecordAuditPopover record={row} />
+                          </div>
+                        </header>
+                        <div
+                          className={`remarks-card-text${long && !expanded ? " is-collapsed" : ""}`}
+                        >
+                          {text || (
+                            <span className="remarks-card-text-empty">No note text</span>
+                          )}
+                        </div>
+                        {long ? (
+                          <button
+                            type="button"
+                            className="remarks-expand-btn"
+                            onClick={() => toggleRemarkExpanded(row.id)}
+                            aria-expanded={expanded}
+                          >
+                            {expanded ? "Show less" : "Show full note"}
+                          </button>
+                        ) : null}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="tab-placeholder remarks-empty">
+                <p>{candidateRemarks.length ? "No notes match your search." : "No communication notes yet."}</p>
+                <p className="text-muted small">
+                  {candidateRemarks.length
+                    ? "Clear the search to see all notes."
+                    : "Click Add Remark to record a communication note."}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {remarkModal.open && (
+        <div className="modal-overlay" onClick={closeRemarkModal}>
+          <div className="modal-content modal-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>{remarkModal.editingId ? "Edit Remark" : "Add Remark"}</h3>
+              <button type="button" className="close-btn" onClick={closeRemarkModal}>&times;</button>
+            </div>
+            <div className="modal-body">
               <div className="form-group" style={{ marginBottom: 16 }}>
-                <label style={{ fontWeight: 700, fontSize: 13, color: "#0f172a", marginBottom: 6, display: "block" }}>Remark</label>
+                <label>Remarks</label>
                 <textarea
                   className="form-control"
-                  rows={6}
-                  value={formData.remark ?? ""}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, remark: e.target.value }))}
-                  style={{ resize: "vertical", minHeight: 120, fontSize: 14 }}
+                  rows={10}
+                  value={remarkModal.remarks}
+                  onChange={(e) => setRemarkModal((prev) => ({ ...prev, remarks: e.target.value }))}
+                  style={{ resize: "vertical", minHeight: 180 }}
+                  placeholder="Write the communication note…"
                 />
               </div>
-              <div className="form-actions">
+              <div className="form-group">
+                <label>Upload File {remarkModal.editingId ? "(optional — leave empty to keep existing)" : "(optional)"}</label>
+                <input
+                  type="file"
+                  className="form-control"
+                  accept=".jpg,.jpeg,.png,.pdf,.doc,.docx"
+                  onChange={(e) => {
+                    const file = pickDocumentFile(e);
+                    setRemarkModal((prev) => ({ ...prev, file: file || null }));
+                  }}
+                />
+              </div>
+            </div>
+            <div className="modal-footer" style={{ display: "flex", gap: 8, justifyContent: "flex-end", padding: "12px 16px" }}>
+              <button type="button" className="btn btn-secondary" onClick={closeRemarkModal} disabled={remarkModal.saving}>
+                Close
+              </button>
+              <button type="button" className="btn btn-primary" onClick={handleSaveRemark} disabled={remarkModal.saving}>
+                {remarkModal.saving ? "Saving…" : "Submit"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Proposal documents: choose a file, preview it without leaving the page */}
+      {proposalDocViewer.open && (
+        <div className="modal-overlay" onClick={closeProposalDocViewer}>
+          <div className="modal-content modal-lg doc-viewer-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>
+                Proposal Documents
+                {proposalDocViewer.row?.vessel_name ? ` · ${proposalDocViewer.row.vessel_name}` : ""}
+              </h3>
+              <button type="button" className="close-btn" onClick={closeProposalDocViewer} aria-label="Close">&times;</button>
+            </div>
+
+            <div className="doc-viewer-body">
+              <div className="doc-viewer-list" role="listbox" aria-label="Documents">
+                <div className="doc-viewer-list-title">
+                  {proposalDocViewer.docs.length} document{proposalDocViewer.docs.length > 1 ? "s" : ""}
+                </div>
+                {proposalDocViewer.docs.map((doc) => (
+                  <button
+                    key={doc.key}
+                    type="button"
+                    role="option"
+                    aria-selected={proposalDocViewer.selected?.key === doc.key}
+                    className={`doc-viewer-item${proposalDocViewer.selected?.key === doc.key ? " is-active" : ""}`}
+                    onClick={() => setProposalDocViewer((prev) => ({ ...prev, selected: doc }))}
+                  >
+                    <i className={`fas ${doc.icon} doc-viewer-item-icon`} aria-hidden="true" />
+                    <span className="doc-viewer-item-text">
+                      <span className="doc-viewer-item-label">{doc.label}</span>
+                      <span className="doc-viewer-item-meta">{doc.ext ? doc.ext.toUpperCase() : "FILE"}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="doc-viewer-stage">
+                {!proposalDocViewer.selected ? (
+                  <div className="doc-viewer-empty">
+                    <i className="fas fa-file-circle-question" aria-hidden="true" />
+                    <p>Select a document to preview</p>
+                  </div>
+                ) : PREVIEWABLE_IMAGE_EXTS.includes(proposalDocViewer.selected.ext) ? (
+                  <div className="doc-viewer-frame doc-viewer-frame--image">
+                    <img src={proposalDocViewer.selected.url} alt={proposalDocViewer.selected.label} />
+                  </div>
+                ) : proposalDocViewer.selected.ext === "pdf" ? (
+                  <div className="doc-viewer-frame">
+                    <iframe
+                      src={`${proposalDocViewer.selected.url}#toolbar=1`}
+                      title={proposalDocViewer.selected.label}
+                    />
+                  </div>
+                ) : (
+                  <div className="doc-viewer-empty">
+                    <i className="fas fa-file-arrow-down" aria-hidden="true" />
+                    <p>
+                      Preview is not available for
+                      {proposalDocViewer.selected.ext ? ` .${proposalDocViewer.selected.ext}` : " this"} files
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      onClick={() => downloadProposalDoc(proposalDocViewer.selected)}
+                    >
+                      Download to view
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="modal-footer doc-viewer-footer">
+              <span className="doc-viewer-filename" title={proposalDocViewer.selected?.fileName || ""}>
+                {proposalDocViewer.selected?.fileName || ""}
+              </span>
+              <div className="doc-viewer-footer-actions">
                 <button
                   type="button"
-                  className="btn btn-primary"
-                  onClick={async () => {
-                    try {
-                      const apiBase = import.meta.env.VITE_API_URL || "";
-                      const payload = { remark: formData.remark ?? "", followup_date: formData.followup_date ?? "" };
-                      await axios.put(`${apiBase}/api/candidates/${id}`, payload);
-                      alert("Remark saved successfully");
-                      fetchCandidateData();
-                    } catch (e) { alert(e?.response?.data?.error || e.message); }
-                  }}
+                  className="btn btn-sm btn-outline-info"
+                  disabled={!proposalDocViewer.selected}
+                  onClick={() => downloadProposalDoc(proposalDocViewer.selected)}
                 >
-                  Save Remark
+                  Download
+                </button>
+                <button type="button" className="btn btn-sm btn-secondary" onClick={closeProposalDocViewer}>
+                  Close
                 </button>
               </div>
             </div>
@@ -3010,36 +3908,12 @@ const CandidateDetails = () => {
                 </div>
                 <div className="form-group">
                   <label>Vessel Name</label>
-                  <select
+                  <input
+                    type="text"
                     className="form-control"
                     value={genericModal.form.vessel_name}
-                    onChange={(e) => handleGenericVesselChange(e.target.value)}
-                  >
-                    <option value="">Select vessel name</option>
-                    {genericModal.form.vessel_name &&
-                      !vesselsList.some(
-                        (v) =>
-                          String(v.ship_name ?? v.vessel_name ?? "").trim() ===
-                          String(genericModal.form.vessel_name).trim(),
-                      ) && (
-                        <option value={genericModal.form.vessel_name}>
-                          {genericModal.form.vessel_name} (current)
-                        </option>
-                      )}
-                    {Array.from(
-                      new Set(
-                        [...vesselsList]
-                          .map((v) => String(v.ship_name ?? v.vessel_name ?? "").trim())
-                          .filter(Boolean),
-                      ),
-                    )
-                      .sort((a, b) => a.localeCompare(b))
-                      .map((name) => (
-                        <option key={name} value={name}>
-                          {name}
-                        </option>
-                      ))}
-                  </select>
+                    onChange={(e) => handleGenericFormChange("vessel_name", e.target.value)}
+                  />
                 </div>
                 <div className="form-group"><label>Flag</label><input type="text" className="form-control" value={genericModal.form.flag} onChange={(e) => handleGenericFormChange("flag", e.target.value)} /></div>
                 <div className="form-group">
@@ -3058,7 +3932,27 @@ const CandidateDetails = () => {
                 <div className="form-group"><label>GRT</label><input type="text" className="form-control" value={genericModal.form.grt} onChange={(e) => handleGenericFormChange("grt", e.target.value)} /></div>
                 <div className="form-group"><label>DWT</label><input type="text" className="form-control" value={genericModal.form.dwt} onChange={(e) => handleGenericFormChange("dwt", e.target.value)} /></div>
                 <div className="form-group"><label>BHP</label><input type="text" className="form-control" value={genericModal.form.bhp} onChange={(e) => handleGenericFormChange("bhp", e.target.value)} /></div>
-                <div className="form-group"><label>Engine Type</label><input type="text" className="form-control" value={genericModal.form.engine_type} onChange={(e) => handleGenericFormChange("engine_type", e.target.value)} /></div>
+                <div className="form-group">
+                  <label>Engine Make/Type</label>
+                  <select
+                    className="form-control"
+                    value={genericModal.form.engine_type}
+                    onChange={(e) => handleGenericFormChange("engine_type", e.target.value)}
+                  >
+                    <option value="">Select Engine Make/Type</option>
+                    {genericModal.form.engine_type &&
+                      !(masterSearchOpts.engineMakes || []).some(
+                        (em) => String(em.name) === String(genericModal.form.engine_type),
+                      ) && (
+                        <option value={genericModal.form.engine_type}>
+                          {genericModal.form.engine_type} (current)
+                        </option>
+                      )}
+                    {(masterSearchOpts.engineMakes || []).map((em) => (
+                      <option key={em.id} value={em.name}>{em.name}</option>
+                    ))}
+                  </select>
+                </div>
                 <div className="form-group"><label>Sign On Date</label><input type="date" className="form-control" value={genericModal.form.sign_on_date} onChange={(e) => handleGenericFormChange("sign_on_date", e.target.value)} /></div>
                 <div className="form-group"><label>Sign Off Date</label><input type="date" className="form-control" value={genericModal.form.sign_off_date} onChange={(e) => handleGenericFormChange("sign_off_date", e.target.value)} /></div>
                 <div className="form-group">
@@ -3074,34 +3968,12 @@ const CandidateDetails = () => {
                 <div className="form-group"><label>Reason of Sign Off</label><input type="text" className="form-control" value={genericModal.form.reason_of_sign_off} onChange={(e) => handleGenericFormChange("reason_of_sign_off", e.target.value)} /></div>
                 <div className="form-group" style={{ gridColumn: "1 / -1" }}>
                   <label>Owner / Company</label>
-                  <select
+                  <input
+                    type="text"
                     className="form-control"
                     value={genericModal.form.owner_company}
                     onChange={(e) => handleGenericFormChange("owner_company", e.target.value)}
-                  >
-                    <option value="">Select owner / company</option>
-                    {genericModal.form.owner_company &&
-                      !ownersList.some(
-                        (o) => String(o.principle_name ?? o.owner_name ?? "").trim() === String(genericModal.form.owner_company).trim(),
-                      ) && (
-                        <option value={genericModal.form.owner_company}>
-                          {genericModal.form.owner_company} (current)
-                        </option>
-                      )}
-                    {Array.from(
-                      new Set(
-                        ownersList
-                          .map((o) => String(o.principle_name ?? o.owner_name ?? "").trim())
-                          .filter(Boolean),
-                      ),
-                    )
-                      .sort((a, b) => a.localeCompare(b))
-                      .map((name) => (
-                        <option key={name} value={name}>
-                          {name}
-                        </option>
-                      ))}
-                  </select>
+                  />
                 </div>
               </>)}
 
@@ -3165,21 +4037,105 @@ const CandidateDetails = () => {
                     ))}
                   </select>
                 </div>
-                <div className="form-group"><label>Tentative Joining Schedule</label><input type="date" className="form-control" value={genericModal.form.tentative_joining_schedule} onChange={(e) => handleGenericFormChange("tentative_joining_schedule", e.target.value)} /></div>
-                <div className="form-group"><label>Wages</label><input type="text" className="form-control" value={genericModal.form.wages} onChange={(e) => handleGenericFormChange("wages", e.target.value)} /></div>
-                <div className="form-group"><label>Proposal Status</label>
+                <div className="form-group">
+                  <label>Proposed Wages (USD)</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    inputMode="decimal"
+                    placeholder="e.g. 4500"
+                    value={genericModal.form.proposed_wages || ""}
+                    onChange={(e) => handleGenericFormChange("proposed_wages", e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Approved Wages (USD)</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    inputMode="decimal"
+                    placeholder="e.g. 4500"
+                    value={genericModal.form.approved_wages || ""}
+                    onChange={(e) => handleGenericFormChange("approved_wages", e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Proposal Date</label>
+                  <input type="date" className="form-control" value={genericModal.form.proposal_date} onChange={(e) => handleGenericFormChange("proposal_date", e.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label>Proposal Status</label>
                   <select className="form-control" value={genericModal.form.proposal_status} onChange={(e) => handleGenericFormChange("proposal_status", e.target.value)}>
                     <option value="">Select status</option>
-                    <option value="propose_to_client">Propose to client</option>
-                    <option value="approved">Approved</option>
-                    <option value="rejected">Rejected</option>
-                    <option value="proposal_cancel">Proposal cancel</option>
-                    <option value="awaiting_reply client">Awaiting reply client</option>
+                    {PROPOSAL_STATUS_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                    {/* Keep legacy value selectable when editing an older record */}
+                    {genericModal.form.proposal_status
+                      && !PROPOSAL_STATUS_OPTIONS.some((o) => o.value === genericModal.form.proposal_status)
+                      && (
+                        <option value={genericModal.form.proposal_status}>
+                          {proposalStatusLabel(genericModal.form.proposal_status)} (current)
+                        </option>
+                      )}
                   </select>
                 </div>
-                <div className="form-group"><label>Proposal Date</label><input type="date" className="form-control" value={genericModal.form.proposal_date} onChange={(e) => handleGenericFormChange("proposal_date", e.target.value)} /></div>
-                <div className="form-group"><label>Approval Date</label><input type="date" className="form-control" value={genericModal.form.approval_date} onChange={(e) => handleGenericFormChange("approval_date", e.target.value)} /></div>
-                <div className="form-group"><label>Tentative Travel Date</label><input type="date" className="form-control" value={genericModal.form.tentative_travel_date} onChange={(e) => handleGenericFormChange("tentative_travel_date", e.target.value)} /></div>
+                <div className="form-group">
+                  <label>Approval Date</label>
+                  <input type="date" className="form-control" value={genericModal.form.approval_date} onChange={(e) => handleGenericFormChange("approval_date", e.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label>Tentative Joining Schedule</label>
+                  <input type="date" className="form-control" value={genericModal.form.tentative_joining_schedule} onChange={(e) => handleGenericFormChange("tentative_joining_schedule", e.target.value)} />
+                </div>
+                <div className="form-group" style={{ gridColumn: "1 / -1" }}>
+                  <label>Remarks</label>
+                  <textarea
+                    className="form-control"
+                    rows={3}
+                    value={genericModal.form.remarks || ""}
+                    onChange={(e) => handleGenericFormChange("remarks", e.target.value)}
+                  />
+                </div>
+                <div className="form-group" style={{ gridColumn: "1 / -1" }}>
+                  <label>Document Uploads (max 20 MB each)</label>
+                  <div className="proposal-upload-grid">
+                    {[
+                      { key: "cv_package_file", label: "CV Package (Aramco)" },
+                      { key: "proposal_email_file", label: "Proposal Email File" },
+                      { key: "approval_email_file", label: "Approval Email File" },
+                      { key: "rejection_email_file", label: "Rejection Email File" },
+                      { key: "other_documents_file", label: "Other Documents" },
+                    ].map(({ key, label }) => {
+                      const existing = genericModal.form[key];
+                      const selected = proposalFiles[key];
+                      const href = existing
+                        ? (String(existing).startsWith("http")
+                          ? existing
+                          : `${import.meta.env.VITE_API_URL || ""}/uploads/documents/${id}/${String(existing).replace(/^\/+/, "").split("/").pop()}`)
+                        : null;
+                      return (
+                        <div key={key} className="proposal-upload-item">
+                          <div className="proposal-upload-label">{label}</div>
+                          <input
+                            type="file"
+                            className="form-control"
+                            accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx,.eml,.msg"
+                            onChange={(e) => {
+                              const file = pickDocumentFile(e);
+                              setProposalFiles((prev) => ({ ...prev, [key]: file }));
+                            }}
+                          />
+                          {selected ? (
+                            <span className="text-muted small">{selected.name} (selected)</span>
+                          ) : href ? (
+                            <a href={href} target="_blank" rel="noopener noreferrer" className="view-file-btn">View current</a>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </>)}
 
               {genericModal.type === "medicals" && (<>
@@ -3218,17 +4174,146 @@ const CandidateDetails = () => {
                     type="file"
                     className="form-control"
                     accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx"
-                    onChange={(e) => setMedicalDocFile(e.target.files?.[0] || null)}
+                    onChange={(e) => setMedicalDocFile(pickDocumentFile(e))}
                   />
                 </div>
               </>)}
 
               {genericModal.type === "flagstate" && (<>
-                <div className="form-group"><label>Flag Doc Country</label><input type="text" className="form-control" value={genericModal.form.flag_doc_country} onChange={(e) => handleGenericFormChange("flag_doc_country", e.target.value)} /></div>
-                <div className="form-group"><label>Flag Doc Name</label><input type="text" className="form-control" value={genericModal.form.flag_doc_name} onChange={(e) => handleGenericFormChange("flag_doc_name", e.target.value)} /></div>
-                <div className="form-group"><label>Flag Doc Grade</label><input type="text" className="form-control" value={genericModal.form.flag_doc_grade} onChange={(e) => handleGenericFormChange("flag_doc_grade", e.target.value)} /></div>
-                <div className="form-group"><label>Issue Date</label><input type="date" className="form-control" value={genericModal.form.issue_date} onChange={(e) => handleGenericFormChange("issue_date", e.target.value)} /></div>
-                <div className="form-group"><label>Expiry Date</label><input type="date" className="form-control" value={genericModal.form.expiry_date} onChange={(e) => handleGenericFormChange("expiry_date", e.target.value)} /></div>
+                <div className="form-group">
+                  <label>Flag State Country</label>
+                  <select
+                    className="form-control"
+                    value={genericModal.form.flag_doc_country}
+                    onChange={(e) => handleGenericFormChange("flag_doc_country", e.target.value)}
+                  >
+                    <option value="">Select country</option>
+                    {genericModal.form.flag_doc_country &&
+                      !(countries || []).some(
+                        (c) => String(c.name) === String(genericModal.form.flag_doc_country),
+                      ) && (
+                        <option value={genericModal.form.flag_doc_country}>
+                          {genericModal.form.flag_doc_country} (current)
+                        </option>
+                      )}
+                    {(countries || []).map((c) => (
+                      <option key={c.id} value={c.name}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>COE/Documents Name</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    value={genericModal.form.flag_doc_name}
+                    onChange={(e) => handleGenericFormChange("flag_doc_name", e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Grade/Capacity</label>
+                  <select
+                    className="form-control"
+                    value={genericModal.form.flag_doc_grade}
+                    onChange={(e) => handleGenericFormChange("flag_doc_grade", e.target.value)}
+                  >
+                    <option value="">Select grade/capacity</option>
+                    {genericModal.form.flag_doc_grade &&
+                      !LICENCE_CAPACITY_OPTIONS.some(
+                        (o) => o.value === genericModal.form.flag_doc_grade,
+                      ) && (
+                        <option value={genericModal.form.flag_doc_grade}>
+                          {labelForLicenceCapacity(genericModal.form.flag_doc_grade)} (current)
+                        </option>
+                      )}
+                    {LICENCE_CAPACITY_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Endorsement No</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    value={genericModal.form.endorsement_no}
+                    onChange={(e) => handleGenericFormChange("endorsement_no", e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Issue Date (Endo)</label>
+                  <input
+                    type="date"
+                    className="form-control"
+                    value={genericModal.form.issue_date}
+                    onChange={(e) => handleGenericFormChange("issue_date", e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Expiry Date (Endo)</label>
+                  <input
+                    type="date"
+                    className="form-control"
+                    value={genericModal.form.expiry_date}
+                    onChange={(e) => handleGenericFormChange("expiry_date", e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Processed by / Agent Name</label>
+                  <select
+                    className="form-control"
+                    value={genericModal.form.processed_by}
+                    onChange={(e) => handleGenericFormChange("processed_by", e.target.value)}
+                  >
+                    <option value="">Select agent</option>
+                    {genericModal.form.processed_by &&
+                      !FLAG_STATE_PROCESSED_BY_OPTIONS.includes(genericModal.form.processed_by) && (
+                        <option value={genericModal.form.processed_by}>
+                          {genericModal.form.processed_by} (current)
+                        </option>
+                      )}
+                    {FLAG_STATE_PROCESSED_BY_OPTIONS.map((opt) => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group" style={{ gridColumn: "1 / -1" }}>
+                  <label>Remarks</label>
+                  <textarea
+                    className="form-control"
+                    rows={3}
+                    value={genericModal.form.remarks}
+                    onChange={(e) => handleGenericFormChange("remarks", e.target.value)}
+                  />
+                </div>
+                <div className="form-group" style={{ gridColumn: "1 / -1" }}>
+                  <label>
+                    Browse (Upload)
+                    {genericModal.editingId ? " — leave empty to keep current file" : ""}
+                  </label>
+                  <input
+                    type="file"
+                    className="form-control"
+                    accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx"
+                    onChange={(e) => setFlagStateDocFile(pickDocumentFile(e))}
+                  />
+                  {genericModal.editingId && genericModal.form.file_path && !flagStateDocFile && (
+                    <p className="text-muted small mb-0 mt-1">
+                      Current file:{" "}
+                      <a
+                        href={
+                          String(genericModal.form.file_path).startsWith("http")
+                            ? genericModal.form.file_path
+                            : `${import.meta.env.VITE_API_URL || ""}/uploads/documents/${id}/${String(genericModal.form.file_path).replace(/^\/+/, "").split("/").pop()}`
+                        }
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        View
+                      </a>
+                    </p>
+                  )}
+                </div>
               </>)}
 
               {genericModal.type === "prejoining" && (<>
@@ -3268,7 +4353,7 @@ const CandidateDetails = () => {
                     type="file"
                     className="form-control"
                     accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx"
-                    onChange={(e) => setPreJoiningTravelFile(e.target.files?.[0] || null)}
+                    onChange={(e) => setPreJoiningTravelFile(pickDocumentFile(e))}
                   />
                 </div>
               </>)}
@@ -3290,7 +4375,9 @@ const CandidateDetails = () => {
         candidateId={id}
         formData={formData}
         countries={countries}
-        onSubmitSuccess={fetchCandidateData}
+        onSubmitSuccess={() => {
+          fetchCandidateData({ fast: true }).catch(() => {});
+        }}
       />
       <NokModal
         show={showNokModal}
@@ -3304,7 +4391,7 @@ const CandidateDetails = () => {
         onSubmitSuccess={() => {
           setShowNokModal(false);
           setNokEditing(null);
-          fetchCandidateData();
+          fetchCandidateData({ fast: true }).catch(() => {});
         }}
       />
 
@@ -3346,7 +4433,7 @@ const CandidateDetails = () => {
                     </thead>
                     <tbody>
                       {signOnDocList.length === 0 ? (
-                        <tr><td colSpan={3} className="text-muted">No documents yet. Add one below.</td></tr>
+                        <tr><td colSpan={4} className="text-muted">No documents yet. Add one below.</td></tr>
                       ) : (
                         signOnDocList.map((d) => (
                           <tr key={d.id}>
@@ -3356,11 +4443,11 @@ const CandidateDetails = () => {
                                 <a href={d.view_url} target="_blank" rel="noopener noreferrer">View</a>
                               ) : "-"}
                             </td>
-                            <td>
-                              <div className="action-icons-toolbar">
+                            <td className="action-cell-with-audit">
+                              <ActionToolbar record={d}>
                                 <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => handleEditSignOnDocument(d)}><i className="fas fa-pen" /></button>
                                 <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleDeleteSignOnDocument(d.id)}><i className="fas fa-trash" /></button>
-                              </div>
+                              </ActionToolbar>
                             </td>
                           </tr>
                         ))
@@ -3891,7 +4978,7 @@ const CandidateDetails = () => {
         onClose={closeSeafarersModal}
         onSubmitSuccess={() => {
           closeSeafarersModal();
-          fetchCandidateData();
+          fetchCandidateData({ fast: true }).catch(() => {});
         }}
       />
 
@@ -3904,7 +4991,7 @@ const CandidateDetails = () => {
         editingDoc={licenseModal.editingDoc}
         onSubmitSuccess={() => {
           setLicenseModal({ open: false, editingDoc: null });
-          fetchCandidateData();
+          fetchCandidateData({ fast: true }).catch(() => {});
         }}
       />
 
@@ -3915,7 +5002,7 @@ const CandidateDetails = () => {
         editingDoc={educationModal.editingDoc}
         onSubmitSuccess={() => {
           setEducationModal({ open: false, editingDoc: null });
-          fetchCandidateData();
+          fetchCandidateData({ fast: true }).catch(() => {});
         }}
       />
 
@@ -3927,7 +5014,7 @@ const CandidateDetails = () => {
         editingDoc={verificationModal.editingDoc}
         onSubmitSuccess={() => {
           setVerificationModal({ open: false, editingDoc: null });
-          fetchCandidateData();
+          fetchCandidateData({ fast: true }).catch(() => {});
         }}
       />
 
@@ -3941,7 +5028,7 @@ const CandidateDetails = () => {
         onClose={() => setAuxCertModal({ open: false, variant: "dce", editingDoc: null })}
         onSubmitSuccess={() => {
           setAuxCertModal({ open: false, variant: "dce", editingDoc: null });
-          fetchCandidateData();
+          fetchCandidateData({ fast: true }).catch(() => {});
         }}
       />
     </div>
@@ -3979,15 +5066,56 @@ const BasicDetailsForm = ({
   handleInputChange,
   handleSubmit,
   handleFileChange,
+  basicPhotoFile = null,
+  basicCvFile = null,
   countries,
   masterSearchOpts = { ranks: [], vesselTypes: [], availabilityStatus: [] },
+  editing = false,
+  saving = false,
+  canEdit = false,
+  onStartEdit,
+  onCancelEdit,
 }) => {
+  const frozen = !editing;
+  const hasPhoto = Boolean(formData.photo_upload && candidateData?.photo);
+  const hasCv = Boolean(formData.cv_upload_path && candidateData?.cv);
+
   return (
-    <form onSubmit={handleSubmit} className="basic-details-form personal-info-form">
+    <form
+      onSubmit={handleSubmit}
+      className={`basic-details-form personal-info-form${frozen ? " personal-info-form--frozen" : " personal-info-form--editing"}`}
+    >
       <div className="personal-info-header">
         <div>
           <div className="personal-info-header-title">Personal Information</div>
-          <div className="personal-info-header-subtitle">Basic details, passport and CDC</div>
+          <div className="personal-info-header-subtitle">
+            {frozen
+              ? (canEdit ? "View only — click Edit to make changes" : "View only")
+              : "Editing — save when finished"}
+          </div>
+        </div>
+        <div className="personal-info-header-actions">
+          {frozen ? (
+            canEdit ? (
+              <button type="button" className="btn btn-primary personal-info-edit-btn" onClick={onStartEdit}>
+                <i className="fas fa-pen" aria-hidden /> Edit
+              </button>
+            ) : null
+          ) : (
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary personal-info-cancel-btn"
+                onClick={onCancelEdit}
+                disabled={saving}
+              >
+                Cancel
+              </button>
+              <button type="submit" className="btn btn-primary personal-info-save-btn" disabled={saving}>
+                {saving ? "Saving…" : "Save"}
+              </button>
+            </>
+          )}
         </div>
       </div>
       <div className="form-wrapper-inner">
@@ -4001,6 +5129,8 @@ const BasicDetailsForm = ({
               value={formData.surname || ""}
               onChange={handleInputChange}
               required
+              readOnly={frozen}
+              disabled={frozen}
             />
           </div>
           <div className="form-group">
@@ -4012,6 +5142,8 @@ const BasicDetailsForm = ({
               value={formData.given_name || ""}
               onChange={handleInputChange}
               required
+              readOnly={frozen}
+              disabled={frozen}
             />
           </div>
           <div className="form-group">
@@ -4022,6 +5154,8 @@ const BasicDetailsForm = ({
               className="form-control"
               value={formData.middle_name || ""}
               onChange={handleInputChange}
+              readOnly={frozen}
+              disabled={frozen}
             />
           </div>
           <div className="form-group">
@@ -4031,6 +5165,7 @@ const BasicDetailsForm = ({
               className="form-control"
               value={formData.rank_id ?? ""}
               onChange={handleInputChange}
+              disabled={frozen}
             >
               <option value="">Select rank</option>
               {(masterSearchOpts.ranks || []).map((r) => (
@@ -4045,6 +5180,7 @@ const BasicDetailsForm = ({
               className="form-control"
               value={formData.vessel_type_id ?? ""}
               onChange={handleInputChange}
+              disabled={frozen}
             >
               <option value="">Select vessel type</option>
               {(masterSearchOpts.vesselTypes || []).map((v) => (
@@ -4061,6 +5197,8 @@ const BasicDetailsForm = ({
               value={toDateInputValue(formData.date_of_birth)}
               onChange={handleInputChange}
               required
+              readOnly={frozen}
+              disabled={frozen}
             />
           </div>
           <div className="form-group">
@@ -4071,6 +5209,8 @@ const BasicDetailsForm = ({
               className="form-control"
               value={formData.place_of_birth || ""}
               onChange={handleInputChange}
+              readOnly={frozen}
+              disabled={frozen}
             />
           </div>
           <div className="form-group">
@@ -4080,6 +5220,7 @@ const BasicDetailsForm = ({
               className="form-control"
               value={formData.nationality_id ?? ""}
               onChange={handleInputChange}
+              disabled={frozen}
             >
               <option value="">Select Nationality</option>
               {(countries || []).map((c) => (
@@ -4092,7 +5233,7 @@ const BasicDetailsForm = ({
         <div className="form-row personal-info-row">
           <div className="form-group">
             <label>RELIGION</label>
-            <select name="religion" className="form-control" value={formData.religion || ""} onChange={handleInputChange}>
+            <select name="religion" className="form-control" value={formData.religion || ""} onChange={handleInputChange} disabled={frozen}>
               <option value="">Select</option>
               <option value="hindu">HINDU</option>
               <option value="muslim">MUSLIM</option>
@@ -4101,7 +5242,7 @@ const BasicDetailsForm = ({
           </div>
           <div className="form-group">
             <label>GENDER</label>
-            <select name="gender" className="form-control" value={formData.gender || ""} onChange={handleInputChange}>
+            <select name="gender" className="form-control" value={formData.gender || ""} onChange={handleInputChange} disabled={frozen}>
               <option value="">Select</option>
               <option value="male">MALE</option>
               <option value="female">FEMALE</option>
@@ -4110,7 +5251,7 @@ const BasicDetailsForm = ({
           </div>
           <div className="form-group">
             <label>MARITAL STATUS</label>
-            <select name="marital_status" className="form-control" value={formData.marital_status || ""} onChange={handleInputChange}>
+            <select name="marital_status" className="form-control" value={formData.marital_status || ""} onChange={handleInputChange} disabled={frozen}>
               <option value="">Select</option>
               <option value="married">MARRIED</option>
               <option value="single">SINGLE</option>
@@ -4118,7 +5259,7 @@ const BasicDetailsForm = ({
           </div>
           <div className="form-group">
             <label>LICENSE AUTHORITY</label>
-            <select name="license" className="form-control" value={formData.license ?? ""} onChange={handleInputChange}>
+            <select name="license" className="form-control" value={formData.license ?? ""} onChange={handleInputChange} disabled={frozen}>
               <option value="">Select</option>
               {(countries || []).map((c) => (
                 <option key={c.id} value={c.id}>{c.name}</option>
@@ -4127,65 +5268,68 @@ const BasicDetailsForm = ({
           </div>
           <div className="form-group">
             <label>PASSPORT NUMBER</label>
-            <input type="text" name="passport_number" className="form-control" value={formData.passport_number || ""} onChange={handleInputChange} required />
+            <input type="text" name="passport_number" className="form-control" value={formData.passport_number || ""} onChange={handleInputChange} required readOnly={frozen} disabled={frozen} />
           </div>
           <div className="form-group">
             <label>PASSPORT ISSUE</label>
-            <input type="date" name="passport_issue_date" className="form-control" value={toDateInputValue(formData.passport_issue_date)} onChange={handleInputChange} />
+            <input type="date" name="passport_issue_date" className="form-control" value={toDateInputValue(formData.passport_issue_date)} onChange={handleInputChange} readOnly={frozen} disabled={frozen} />
           </div>
           <div className="form-group">
             <label>PASSPORT EXPIRY *</label>
-            <input type="date" name="passport_expiry_date" className="form-control" value={toDateInputValue(formData.passport_expiry_date)} onChange={handleInputChange} required />
+            <input type="date" name="passport_expiry_date" className="form-control" value={toDateInputValue(formData.passport_expiry_date)} onChange={handleInputChange} required readOnly={frozen} disabled={frozen} />
           </div>
           <div className="form-group">
             <label>CDC NUMBER</label>
-            <input type="text" name="cdc_number" className="form-control" value={formData.cdc_number || ""} onChange={handleInputChange} required />
+            <input type="text" name="cdc_number" className="form-control" value={formData.cdc_number || ""} onChange={handleInputChange} required readOnly={frozen} disabled={frozen} />
           </div>
         </div>
 
         <div className="form-row personal-info-row">
           <div className="form-group">
             <label>CDC ISSUE DATE</label>
-            <input type="date" name="cdc_issue_date" className="form-control" value={toDateInputValue(formData.cdc_issue_date)} onChange={handleInputChange} />
+            <input type="date" name="cdc_issue_date" className="form-control" value={toDateInputValue(formData.cdc_issue_date)} onChange={handleInputChange} readOnly={frozen} disabled={frozen} />
           </div>
           <div className="form-group">
             <label>CDC EXPIRY DATE *</label>
-            <input type="date" name="cdc_expiry_date" className="form-control" value={toDateInputValue(formData.cdc_expiry_date)} onChange={handleInputChange} required />
+            <input type="date" name="cdc_expiry_date" className="form-control" value={toDateInputValue(formData.cdc_expiry_date)} onChange={handleInputChange} required readOnly={frozen} disabled={frozen} />
           </div>
           <div className="form-group">
             <label>INDOS NUMBER</label>
-            <input type="text" name="indos_number" className="form-control" value={formData.indos_number || ""} onChange={handleInputChange} required />
+            <input type="text" name="indos_number" className="form-control" value={formData.indos_number || ""} onChange={handleInputChange} required readOnly={frozen} disabled={frozen} />
           </div>
           <div className="form-group">
             <label>STATUS</label>
-            <input
-              type="hidden"
+            <select
               name="availability_status_id"
-              value={formData.availability_status_id ?? ""}
-            />
-            <input
-              type="text"
-              readOnly
               className="form-control"
-              value={(() => {
-                const label = resolveAvailabilityStatusLabel(
-                  formData,
-                  masterSearchOpts.availabilityStatus,
-                );
-                if (label) return label;
-                const availabilityId = formData.availability_status_id;
-                if (availabilityId === null || availabilityId === undefined || availabilityId === "") return "N/A";
-                return `Status ${availabilityId}`;
-              })()}
-            />
+              value={formData.availability_status_id ?? ""}
+              onChange={handleInputChange}
+              disabled={frozen}
+            >
+              <option value="">Select status</option>
+              {formData.availability_status_id != null &&
+                formData.availability_status_id !== "" &&
+                !(masterSearchOpts.availabilityStatus || []).some(
+                  (s) => String(s.id) === String(formData.availability_status_id),
+                ) && (
+                  <option value={formData.availability_status_id}>
+                    {resolveAvailabilityStatusLabel(formData, masterSearchOpts.availabilityStatus) ||
+                      `Status ${formData.availability_status_id}`}{" "}
+                    (current)
+                  </option>
+                )}
+              {(masterSearchOpts.availabilityStatus || []).map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
           </div>
           <div className="form-group">
             <label>AVAILABILITY DATE</label>
-            <input type="date" name="availability_date" className="form-control" value={toDateInputValue(formData.availability_date)} onChange={handleInputChange} required />
+            <input type="date" name="availability_date" className="form-control" value={toDateInputValue(formData.availability_date)} onChange={handleInputChange} required readOnly={frozen} disabled={frozen} />
           </div>
           <div className="form-group">
             <label>ARAMCO CHARTER</label>
-            <select name="aramco_charter" className="form-control" value={formData.aramco_charter || ""} onChange={handleInputChange} required>
+            <select name="aramco_charter" className="form-control" value={formData.aramco_charter || ""} onChange={handleInputChange} required disabled={frozen}>
               <option value="">Select</option>
               <option value="yes">YES</option>
               <option value="no">NO</option>
@@ -4193,44 +5337,81 @@ const BasicDetailsForm = ({
           </div>
           <div className="form-group">
             <label>FOLLOW-UP DATE</label>
-            <input type="date" name="followup_date" className="form-control" value={toDateInputValue(formData.followup_date)} onChange={handleInputChange} />
+            <input type="date" name="followup_date" className="form-control" value={toDateInputValue(formData.followup_date)} onChange={handleInputChange} readOnly={frozen} disabled={frozen} />
           </div>
           <div className="form-group">
             <label>EMAIL</label>
-            <input type="email" name="email_id" className="form-control" value={formData.email_id || ""} onChange={handleInputChange} />
+            <input type="email" name="email_id" className="form-control" value={formData.email_id || ""} onChange={handleInputChange} readOnly={frozen} disabled={frozen} />
           </div>
           <div className="form-group">
             <label>CONTACT NO. 1</label>
-            <input type="text" name="contact_no_1" className="form-control" value={formData.contact_no_1 || ""} onChange={handleInputChange} />
+            <input type="text" name="contact_no_1" className="form-control" value={formData.contact_no_1 || ""} onChange={handleInputChange} readOnly={frozen} disabled={frozen} />
           </div>
           <div className="form-group">
             <label>CONTACT NO. 2</label>
-            <input type="text" name="contact_no_2" className="form-control" value={formData.contact_no_2 || ""} onChange={handleInputChange} />
+            <input type="text" name="contact_no_2" className="form-control" value={formData.contact_no_2 || ""} onChange={handleInputChange} readOnly={frozen} disabled={frozen} />
           </div>
-          <div className="form-group form-group-file">
-            <label>PHOTO</label>
-            <div className="personal-info-file-cell">
-              <input type="file" name="photo_upload" className="form-control" accept="image/*" onChange={handleFileChange} />
-              {formData.photo_upload && candidateData?.photo && (
-                <a href={candidateData.photo} target="_blank" rel="noopener noreferrer" className="view-file-btn" title="View photo">View</a>
-              )}
+          {frozen ? (
+            <div className="form-group form-group-attachments personal-info-attachments">
+              <label>ATTACHMENTS</label>
+              <div className="personal-info-attachments-row">
+                <div className="personal-info-attachment-item">
+                  <span className="personal-info-attachment-label">Photo</span>
+                  {hasPhoto ? (
+                    <a href={candidateData.photo} target="_blank" rel="noopener noreferrer" className="view-file-btn" title="View photo">View</a>
+                  ) : (
+                    <span className="personal-info-attachment-empty">None</span>
+                  )}
+                </div>
+                <div className="personal-info-attachment-item">
+                  <span className="personal-info-attachment-label">CV</span>
+                  {hasCv ? (
+                    <a href={candidateData.cv} target="_blank" rel="noopener noreferrer" className="view-file-btn" title="View CV">View</a>
+                  ) : (
+                    <span className="personal-info-attachment-empty">None</span>
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
-          <div className="form-group form-group-file">
-            <label>CV</label>
-            <div className="personal-info-file-cell">
-              <input type="file" name="cv_upload" className="form-control" accept=".pdf,.doc,.docx" onChange={handleFileChange} />
-              {formData.cv_upload_path && candidateData?.cv && (
-                <a href={candidateData.cv} target="_blank" rel="noopener noreferrer" className="view-file-btn" title="View CV">View</a>
-              )}
-            </div>
-          </div>
+          ) : (
+            <>
+              <div className="form-group form-group-file">
+                <label>PHOTO</label>
+                <div className="personal-info-file-cell">
+                  <input type="file" name="photo_upload" className="form-control" accept="image/*" onChange={handleFileChange} />
+                  {basicPhotoFile ? (
+                    <span className="text-muted small" style={{ marginLeft: 8 }}>{basicPhotoFile.name} (selected)</span>
+                  ) : hasPhoto ? (
+                    <a href={candidateData.photo} target="_blank" rel="noopener noreferrer" className="view-file-btn" title="View photo">View</a>
+                  ) : null}
+                </div>
+              </div>
+              <div className="form-group form-group-file">
+                <label>CV</label>
+                <div className="personal-info-file-cell">
+                  <input type="file" name="cv_upload" className="form-control" accept=".pdf,.doc,.docx" onChange={handleFileChange} />
+                  {basicCvFile ? (
+                    <span className="text-muted small" style={{ marginLeft: 8 }}>{basicCvFile.name} (selected)</span>
+                  ) : hasCv ? (
+                    <a href={candidateData.cv} target="_blank" rel="noopener noreferrer" className="view-file-btn" title="View CV">View</a>
+                  ) : null}
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
-      <div className="form-actions">
-        <button type="submit" className="btn btn-primary">Update Candidate</button>
-      </div>
+      {!frozen && (
+        <div className="form-actions">
+          <button type="button" className="btn btn-secondary" onClick={onCancelEdit} disabled={saving}>
+            Cancel
+          </button>
+          <button type="submit" className="btn btn-primary" disabled={saving}>
+            {saving ? "Saving…" : "Save changes"}
+          </button>
+        </div>
+      )}
     </form>
   );
 };
@@ -4396,7 +5577,7 @@ const NokSection = ({ nokDocs, candidateData, formData, onAddNew, onEdit, fetchC
             <tbody>
               {nokDocs.map((nok) => (
                 <tr key={nok.id}>
-                  <AuditCell record={nok}>{(nok.name || "").toString().toUpperCase()}</AuditCell>
+                  <td>{(nok.name || "").toString().toUpperCase()}</td>
                   <td>{nok.nomineeRelationship?.relationship ?? nok.relationship ?? "-"}</td>
                   <td>{(nok.gender || "").toString().toUpperCase()}</td>
                   <td>{(nok.nok || "").toString().toUpperCase()}</td>
@@ -4406,11 +5587,11 @@ const NokSection = ({ nokDocs, candidateData, formData, onAddNew, onEdit, fetchC
                   <td>{formatDate(nok.dob)}</td>
                   <td>{(nok.remark || "").toString().toUpperCase()}</td>
                   <td>{nok.file_path ? <a href={nok.file_path} target="_blank" rel="noopener noreferrer">View</a> : "-"}</td>
-                  <td>
-                    <div className="action-icons-toolbar">
+                  <td className="action-cell-with-audit">
+                    <ActionToolbar record={nok}>
                       <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => onEdit && onEdit(nok)}><i className="fas fa-pen" /></button>
                       <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => { /* delete */ }}><i className="fas fa-trash" /></button>
-                    </div>
+                    </ActionToolbar>
                   </td>
                 </tr>
               ))}
@@ -4490,8 +5671,9 @@ const AdditionalInfoSection = ({ additionalInfo, candidateData, onEdit }) => {
   );
 };
 
-/** Compact icon toolbar for document tables — tooltips + aria-labels for clarity */
+/** Compact icon toolbar for document tables — audit on hover, tooltips + aria-labels */
 function DocumentRowActions({
+  record,
   previewOpen,
   hasFile,
   onPreview,
@@ -4500,7 +5682,7 @@ function DocumentRowActions({
   onDelete,
 }) {
   return (
-    <div className="doc-actions-toolbar" role="toolbar" aria-label="Document actions">
+    <div className="doc-actions-toolbar action-audit-hover" role="toolbar" aria-label="Document actions">
       <button
         type="button"
         className={`doc-action-btn doc-action-preview${previewOpen ? " is-active" : ""}`}
@@ -4550,6 +5732,7 @@ function DocumentRowActions({
           <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
         </svg>
       </button>
+      <RecordAuditPopover record={record} />
     </div>
   );
 }
@@ -4632,18 +5815,16 @@ const PassportSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => {
                         isExpired ? "doc-row-expired" : "",
                       ].filter(Boolean).join(" ")}
                     >
-                      <td className="doc-row-audit-cell">
-                        <span className="doc-row-audit-index">{idx + 1}</span>
-                        <RecordAuditPopover record={doc} />
-                      </td>
+                      <td>{idx + 1}</td>
                       <td>{doc.certificate_number || "-"}</td>
                       <td>{formatDocDate(doc.issue_date)}</td>
                       <td>{formatDocDate(doc.expiry_date)}</td>
                       <td>{doc.country_name?.toUpperCase() || "-"}</td>
                       <td>{doc.place_of_issue?.toUpperCase() || "-"}</td>
                       <td><DocFileCell url={doc.file_path} /></td>
-                      <td className="doc-list-actions-cell">
+                      <td className="doc-list-actions-cell action-cell-with-audit">
                         <DocumentRowActions
+                          record={doc}
                           previewOpen={selectedDoc?.id === doc.id}
                           hasFile={!!doc.file_path}
                           onPreview={() =>
@@ -4821,18 +6002,16 @@ const CdcSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => {
                         isExpired ? "doc-row-expired" : "",
                       ].filter(Boolean).join(" ")}
                     >
-                      <td className="doc-row-audit-cell">
-                        <span className="doc-row-audit-index">{idx + 1}</span>
-                        <RecordAuditPopover record={doc} />
-                      </td>
+                      <td>{idx + 1}</td>
                       <td>{doc.certificate_number || "-"}</td>
                       <td>{formatDocDate(doc.issue_date)}</td>
                       <td>{formatDocDate(doc.expiry_date)}</td>
                       <td>{doc.country_name?.toUpperCase() || "-"}</td>
                       <td>{doc.place_of_issue?.toUpperCase() || "-"}</td>
                       <td><DocFileCell url={doc.file_path} /></td>
-                      <td className="doc-list-actions-cell">
+                      <td className="doc-list-actions-cell action-cell-with-audit">
                         <DocumentRowActions
+                          record={doc}
                           previewOpen={selectedDoc?.id === doc.id}
                           hasFile={!!doc.file_path}
                           onPreview={() =>
@@ -5013,10 +6192,7 @@ const LicenseSection = ({ licenses, onAddNew, onDelete, onEdit }) => {
                         isExpired ? "doc-row-expired" : "",
                       ].filter(Boolean).join(" ")}
                     >
-                      <td className="doc-row-audit-cell">
-                        <span className="doc-row-audit-index">{idx + 1}</span>
-                        <RecordAuditPopover record={license} />
-                      </td>
+                      <td>{idx + 1}</td>
                       <td>
                         {license.type?.replace(/_/g, " ").toUpperCase() || "-"}
                       </td>
@@ -5028,14 +6204,9 @@ const LicenseSection = ({ licenses, onAddNew, onDelete, onEdit }) => {
                       <td>{formatDocDate(license.expiry_date)}</td>
                       <td>{license.issue_place?.toUpperCase() || "-"}</td>
                       <td>{license.country_name?.toUpperCase() || "-"}</td>
-                      <td className="doc-list-actions-cell">
-                        {license.upload_file ? (
-                          <>
-                            <a href={license.upload_file} target="_blank" rel="noopener noreferrer">View</a>
-                            {" | "}
-                          </>
-                        ) : null}
+                      <td className="doc-list-actions-cell action-cell-with-audit">
                         <DocumentRowActions
+                          record={license}
                           previewOpen={selectedDoc?.id === license.id}
                           hasFile={!!license.upload_file}
                           onPreview={() =>
@@ -5218,10 +6389,7 @@ const StcwDocumentsSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => 
                         isExpired ? "doc-row-expired" : "",
                       ].filter(Boolean).join(" ")}
                     >
-                      <td className="doc-row-audit-cell">
-                        <span className="doc-row-audit-index">{idx + 1}</span>
-                        <RecordAuditPopover record={doc} />
-                      </td>
+                      <td>{idx + 1}</td>
                       <td>{doc.country_name?.toUpperCase() || "-"}</td>
                       <td>{doc.document_name?.toUpperCase() || "-"}</td>
                       <td>{doc.stcw_regulation?.toUpperCase() || "-"}</td>
@@ -5230,8 +6398,9 @@ const StcwDocumentsSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => 
                       <td>{formatDocDate(doc.issue_date)}</td>
                       <td>{formatDocDate(doc.expiry_date)}</td>
                       <td><DocFileCell url={doc.file_path} /></td>
-                      <td className="doc-list-actions-cell">
+                      <td className="doc-list-actions-cell action-cell-with-audit">
                         <DocumentRowActions
+                          record={doc}
                           previewOpen={selectedDoc?.id === doc.id}
                           hasFile={!!doc.file_path}
                           onPreview={() =>
@@ -5398,10 +6567,7 @@ const DceDocumentsSection = ({ dceDocs, onAddNew, onDelete, onEdit }) => {
                         isExpired ? "doc-row-expired" : "",
                       ].filter(Boolean).join(" ")}
                     >
-                      <td className="doc-row-audit-cell">
-                        <span className="doc-row-audit-index">{idx + 1}</span>
-                        <RecordAuditPopover record={doc} />
-                      </td>
+                      <td>{idx + 1}</td>
                       <td>{doc.country_name?.toUpperCase() || "-"}</td>
                       <td>{doc.document_name?.toUpperCase() || "-"}</td>
                       <td>{doc.certificate_number || "-"}</td>
@@ -5409,8 +6575,9 @@ const DceDocumentsSection = ({ dceDocs, onAddNew, onDelete, onEdit }) => {
                       <td>{formatDocDate(doc.issue_date)}</td>
                       <td>{formatDocDate(doc.expiry_date)}</td>
                       <td><DocFileCell url={fileUrl(doc)} /></td>
-                      <td className="doc-list-actions-cell">
+                      <td className="doc-list-actions-cell action-cell-with-audit">
                         <DocumentRowActions
+                          record={doc}
                           previewOpen={selectedDoc?.id === doc.id}
                           hasFile={!!fileUrl(doc)}
                           onPreview={() => setSelectedDoc(selectedDoc?.id === doc.id ? null : doc)}
@@ -5530,10 +6697,7 @@ const ValueAddedDocumentsSection = ({ valueCourses, onAddNew, onDelete, onEdit }
                         isExpired ? "doc-row-expired" : "",
                       ].filter(Boolean).join(" ")}
                     >
-                      <td className="doc-row-audit-cell">
-                        <span className="doc-row-audit-index">{idx + 1}</span>
-                        <RecordAuditPopover record={doc} />
-                      </td>
+                      <td>{idx + 1}</td>
                       <td>{doc.country_name?.toUpperCase() || "-"}</td>
                       <td>{doc.document_name?.toUpperCase() || "-"}</td>
                       <td>{doc.certificate_number || "-"}</td>
@@ -5541,8 +6705,9 @@ const ValueAddedDocumentsSection = ({ valueCourses, onAddNew, onDelete, onEdit }
                       <td>{formatDocDate(doc.issue_date)}</td>
                       <td>{formatDocDate(doc.expiry_date)}</td>
                       <td><DocFileCell url={fileUrl(doc)} /></td>
-                      <td className="doc-list-actions-cell">
+                      <td className="doc-list-actions-cell action-cell-with-audit">
                         <DocumentRowActions
+                          record={doc}
                           previewOpen={selectedDoc?.id === doc.id}
                           hasFile={!!fileUrl(doc)}
                           onPreview={() => setSelectedDoc(selectedDoc?.id === doc.id ? null : doc)}
@@ -5595,18 +6760,45 @@ const ValueAddedDocumentsSection = ({ valueCourses, onAddNew, onDelete, onEdit }
   );
 };
 
-const VisaSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => {
+const VisaSection = ({ candidateId, seafarersDocs, onAddNew, onDelete, onEdit }) => {
   const [selectedDoc, setSelectedDoc] = useState(null);
+  const [visaDocViewer, setVisaDocViewer] = useState({ open: false, row: null, docs: [], selected: null });
   const visaDocs = seafarersDocs.filter(
     (doc) => doc.document_name === "VISA Copy",
   );
 
+  const openVisaDocViewer = (row) => {
+    const docs = visaDocumentsFor(row, candidateId);
+    if (!docs.length) return;
+    setVisaDocViewer({ open: true, row, docs, selected: docs.length === 1 ? docs[0] : null });
+  };
+
+  const closeVisaDocViewer = () =>
+    setVisaDocViewer({ open: false, row: null, docs: [], selected: null });
+
+  const downloadVisaDoc = (doc) => {
+    if (!doc?.url) return;
+    const a = document.createElement("a");
+    a.href = doc.url;
+    a.download = doc.fileName || "document";
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
   const handleDownload = async (doc) => {
     try {
-      const response = await axios.get(doc.file_path, { responseType: "blob" });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const url = doc.file_path || visaDocumentsFor(doc, candidateId)[0]?.url;
+      if (!url) {
+        alert("No document file attached");
+        return;
+      }
+      const response = await axios.get(url, { responseType: "blob" });
+      const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement("a");
-      link.href = url;
+      link.href = blobUrl;
       link.setAttribute(
         "download",
         `Visa_${doc.certificate_number || "document"}.pdf`,
@@ -5614,7 +6806,7 @@ const VisaSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => {
       document.body.appendChild(link);
       link.click();
       link.parentElement.removeChild(link);
-      window.URL.revokeObjectURL(url);
+      window.URL.revokeObjectURL(blobUrl);
     } catch (error) {
       console.error("Error downloading document:", error);
       alert("Failed to download document");
@@ -5661,9 +6853,10 @@ const VisaSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => {
                   <th>Issue Date</th>
                   <th>Arrival Date in Destination</th>
                   <th>Reference/Boarder No</th>
+                  <th>Sponsor Name</th>
                   <th>Expiry Date</th>
                   <th>Remark</th>
-                  <th>Document File</th>
+                  <th>Documents</th>
                   <th>Action</th>
                 </tr>
               </thead>
@@ -5671,6 +6864,8 @@ const VisaSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => {
                 {visaDocs.map((doc, idx) => {
                   const isExpired =
                     doc.expiry_date && new Date(doc.expiry_date) < new Date();
+                  const rowDocs = visaDocumentsFor(doc, candidateId);
+                  const hasAnyFile = rowDocs.length > 0;
                   return (
                     <tr
                       key={doc.id}
@@ -5679,10 +6874,7 @@ const VisaSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => {
                         isExpired ? "doc-row-expired" : "",
                       ].filter(Boolean).join(" ")}
                     >
-                      <td className="doc-row-audit-cell">
-                        <span className="doc-row-audit-index">{idx + 1}</span>
-                        <RecordAuditPopover record={doc} />
-                      </td>
+                      <td>{idx + 1}</td>
                       <td>{doc.visa_country_name?.toUpperCase() || "-"}</td>
                       <td>{doc.visa_issue_country_name?.toUpperCase() || "-"}</td>
                       <td>{doc.place_of_issue?.toUpperCase() || "-"}</td>
@@ -5692,13 +6884,30 @@ const VisaSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => {
                       <td>{formatDocDate(doc.issue_date)}</td>
                       <td>{formatDocDate(doc.visa_arrive_date)}</td>
                       <td>{doc.border_number || "-"}</td>
+                      <td title={visaSponsorLabel(doc.sponsor_name)}>
+                        {visaSponsorLabel(doc.sponsor_name)}
+                      </td>
                       <td>{formatDocDate(doc.expiry_date)}</td>
                       <td title={doc.remark || ""}>{doc.remark ? String(doc.remark).slice(0, 12) : "-"}</td>
-                      <td><DocFileCell url={doc.file_path} /></td>
-                      <td className="doc-list-actions-cell">
+                      <td>
+                        {hasAnyFile ? (
+                          <button
+                            type="button"
+                            className="doc-view-trigger"
+                            onClick={() => openVisaDocViewer(doc)}
+                            title={`View ${rowDocs.length} document${rowDocs.length > 1 ? "s" : ""}`}
+                          >
+                            <i className="fas fa-folder-open" aria-hidden="true" />
+                            View
+                            <span className="doc-view-count">{rowDocs.length}</span>
+                          </button>
+                        ) : "-"}
+                      </td>
+                      <td className="doc-list-actions-cell action-cell-with-audit">
                         <DocumentRowActions
+                          record={doc}
                           previewOpen={selectedDoc?.id === doc.id}
-                          hasFile={!!doc.file_path}
+                          hasFile={hasAnyFile}
                           onPreview={() =>
                             setSelectedDoc(selectedDoc?.id === doc.id ? null : doc)
                           }
@@ -5714,7 +6923,7 @@ const VisaSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => {
             </table>
           </div>
 
-          {/* Document Preview Section */}
+          {/* Document Preview Section (legacy single-file quick preview) */}
           {selectedDoc && (
             <div className="document-preview-container">
               <div className="preview-header">
@@ -5765,7 +6974,19 @@ const VisaSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => {
                   </>
                 ) : (
                   <div className="preview-unavailable">
-                    <p>No document file attached</p>
+                    <p>No primary document file attached — use View to open uploaded copies</p>
+                    {visaDocumentsFor(selectedDoc, candidateId).length > 0 && (
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={() => {
+                          openVisaDocViewer(selectedDoc);
+                          setSelectedDoc(null);
+                        }}
+                      >
+                        Open documents
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -5790,6 +7011,100 @@ const VisaSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => {
       ) : (
         <div className="empty-state">
           <p>No visa documents available</p>
+        </div>
+      )}
+
+      {visaDocViewer.open && (
+        <div className="modal-overlay" onClick={closeVisaDocViewer}>
+          <div className="modal-content modal-lg doc-viewer-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>
+                Visa Documents
+                {visaDocViewer.row?.certificate_number
+                  ? ` · #${visaDocViewer.row.certificate_number}`
+                  : ""}
+              </h3>
+              <button type="button" className="close-btn" onClick={closeVisaDocViewer} aria-label="Close">&times;</button>
+            </div>
+
+            <div className="doc-viewer-body">
+              <div className="doc-viewer-list" role="listbox" aria-label="Documents">
+                <div className="doc-viewer-list-title">
+                  {visaDocViewer.docs.length} document{visaDocViewer.docs.length > 1 ? "s" : ""}
+                </div>
+                {visaDocViewer.docs.map((doc) => (
+                  <button
+                    key={doc.key}
+                    type="button"
+                    role="option"
+                    aria-selected={visaDocViewer.selected?.key === doc.key}
+                    className={`doc-viewer-item${visaDocViewer.selected?.key === doc.key ? " is-active" : ""}`}
+                    onClick={() => setVisaDocViewer((prev) => ({ ...prev, selected: doc }))}
+                  >
+                    <i className={`fas ${doc.icon} doc-viewer-item-icon`} aria-hidden="true" />
+                    <span className="doc-viewer-item-text">
+                      <span className="doc-viewer-item-label">{doc.label}</span>
+                      <span className="doc-viewer-item-meta">{doc.ext ? doc.ext.toUpperCase() : "FILE"}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="doc-viewer-stage">
+                {!visaDocViewer.selected ? (
+                  <div className="doc-viewer-empty">
+                    <i className="fas fa-file-circle-question" aria-hidden="true" />
+                    <p>Select a document to preview</p>
+                  </div>
+                ) : PREVIEWABLE_IMAGE_EXTS.includes(visaDocViewer.selected.ext) ? (
+                  <div className="doc-viewer-frame doc-viewer-frame--image">
+                    <img src={visaDocViewer.selected.url} alt={visaDocViewer.selected.label} />
+                  </div>
+                ) : visaDocViewer.selected.ext === "pdf" ? (
+                  <div className="doc-viewer-frame">
+                    <iframe
+                      src={`${visaDocViewer.selected.url}#toolbar=1`}
+                      title={visaDocViewer.selected.label}
+                    />
+                  </div>
+                ) : (
+                  <div className="doc-viewer-empty">
+                    <i className="fas fa-file-arrow-down" aria-hidden="true" />
+                    <p>
+                      Preview is not available for
+                      {visaDocViewer.selected.ext ? ` .${visaDocViewer.selected.ext}` : " this"} files
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      onClick={() => downloadVisaDoc(visaDocViewer.selected)}
+                    >
+                      Download to view
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="modal-footer doc-viewer-footer">
+              <span className="doc-viewer-filename" title={visaDocViewer.selected?.fileName || ""}>
+                {visaDocViewer.selected?.fileName || ""}
+              </span>
+              <div className="doc-viewer-footer-actions">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline-info"
+                  disabled={!visaDocViewer.selected}
+                  onClick={() => downloadVisaDoc(visaDocViewer.selected)}
+                >
+                  Download
+                </button>
+                <button type="button" className="btn btn-sm btn-secondary" onClick={closeVisaDocViewer}>
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -5871,10 +7186,7 @@ const EducationalDocuments = ({ edDocs, onDelete, onEdit, onAddNew }) => {
                       key={edDoc.id}
                       className={selectedDoc?.id === edDoc.id ? "doc-row-active" : ""}
                     >
-                      <td className="doc-row-audit-cell">
-                        <span className="doc-row-audit-index">{idx + 1}</span>
-                        <RecordAuditPopover record={edDoc} />
-                      </td>
+                      <td>{idx + 1}</td>
                       <td>{edDoc.type?.replace(/_/g, " ").toUpperCase() || "-"}</td>
                       <td>{edDoc.name?.toUpperCase() || "-"}</td>
                       <td>{formatDocDate(edDoc.from_year)}</td>
@@ -5882,7 +7194,7 @@ const EducationalDocuments = ({ edDocs, onDelete, onEdit, onAddNew }) => {
                       <td>{edDoc.qualification_attained?.toUpperCase() || "-"}</td>
                       <td>{edDoc.address?.toUpperCase() || "-"}</td>
                       <td title={edDoc.remark || ""}>{edDoc.remark?.toUpperCase() || "-"}</td>
-                      <td className="doc-list-actions-cell">
+                      <td className="doc-list-actions-cell action-cell-with-audit">
                         {edDoc.upload_file ? (
                           <>
                             <a href={edDoc.upload_file} target="_blank" rel="noopener noreferrer">View</a>
@@ -5890,6 +7202,7 @@ const EducationalDocuments = ({ edDocs, onDelete, onEdit, onAddNew }) => {
                           </>
                         ) : null}
                         <DocumentRowActions
+                          record={edDoc}
                           previewOpen={selectedDoc?.id === edDoc.id}
                           hasFile={!!edDoc.upload_file}
                           onPreview={() =>
@@ -6065,17 +7378,14 @@ const VerificationDocuments = ({ edDocs, onDelete, onEdit, onAddNew }) => {
                       key={edDoc.id}
                       className={selectedDoc?.id === edDoc.id ? "doc-row-active" : ""}
                     >
-                      <td className="doc-row-audit-cell">
-                        <span className="doc-row-audit-index">{idx + 1}</span>
-                        <RecordAuditPopover record={edDoc} />
-                      </td>
+                      <td>{idx + 1}</td>
                       <td>{(edDoc.document_type_name || edDoc.document_id || "-").toString().toUpperCase()}</td>
                       <td>{edDoc.document_number || "-"}</td>
                       <td>{formatDocDate(edDoc.verification_date)}</td>
                       <td>{edDoc.verification_mode ? String(edDoc.verification_mode).replace(/_/g, " ").toUpperCase() : "-"}</td>
                       <td>{edDoc.verified === 1 || edDoc.verified === true ? "Yes" : edDoc.verified === 0 || edDoc.verified === false ? "No" : "-"}</td>
                       <td title={edDoc.remark || ""}>{edDoc.remark ? String(edDoc.remark).slice(0, 12) : "-"}</td>
-                      <td className="doc-list-actions-cell">
+                      <td className="doc-list-actions-cell action-cell-with-audit">
                         {edDoc.file_upload ? (
                           <>
                             <a href={edDoc.file_upload} target="_blank" rel="noopener noreferrer">View</a>
@@ -6083,6 +7393,7 @@ const VerificationDocuments = ({ edDocs, onDelete, onEdit, onAddNew }) => {
                           </>
                         ) : null}
                         <DocumentRowActions
+                          record={edDoc}
                           previewOpen={selectedDoc?.id === edDoc.id}
                           hasFile={!!edDoc.file_upload}
                           onPreview={() =>
@@ -6329,7 +7640,7 @@ const AddressModal = ({ show, onClose, candidateId, formData, countries, onSubmi
       }
       await axios.put(`${apiBase}/api/candidates/${candidateId}`, payload);
       onClose();
-      await onSubmitSuccess?.();
+      onSubmitSuccess?.();
     } catch (err) {
       const msg = err.response?.data?.error || err.message || "Failed to save address.";
       setError(msg);
@@ -6491,7 +7802,7 @@ const NokModal = ({ show, onClose, candidateId, editingNok, nomineeRelationships
       else await axios.post(path, fd);
 
       onClose();
-      await onSubmitSuccess?.();
+      onSubmitSuccess?.();
     } catch (err) {
       const msg = err?.response?.data?.error || err.message || "Failed to save NOK.";
       setError(msg);
@@ -6554,7 +7865,7 @@ const NokModal = ({ show, onClose, candidateId, editingNok, nomineeRelationships
             <div className="form-group"><label>REMARK</label><input type="text" className="form-control" name="remark" value={data.remark} onChange={handleChange} /></div>
             <div className="form-group">
               <label>Upload File (optional)</label>
-              <input type="file" className="form-control" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+              <input type="file" className="form-control" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" onChange={(e) => setFile(pickDocumentFile(e))} />
             </div>
           </div>
           <div className="modal-footer">
@@ -6700,6 +8011,9 @@ const SeafarersDocumentModal = ({
   const [form, setForm] = useState({});
   const [pickedTypeId, setPickedTypeId] = useState("");
   const [file, setFile] = useState(null);
+  const [visaFiles, setVisaFiles] = useState(() =>
+    Object.fromEntries(VISA_DOC_FIELDS.map(({ key }) => [key, null])),
+  );
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -6718,6 +8032,8 @@ const SeafarersDocumentModal = ({
     );
     setForm({
       country_id: d?.country_id != null ? String(d.country_id) : "",
+      visa_country: d?.visa_country != null ? String(d.visa_country) : "",
+      visa_issue_country: d?.visa_issue_country != null ? String(d.visa_issue_country) : "",
       certificate_number: d?.certificate_number || "",
       place_of_issue: d?.place_of_issue || "",
       issue_date: toDateInputValue(d?.issue_date),
@@ -6726,8 +8042,18 @@ const SeafarersDocumentModal = ({
       visa_category: d?.visa_category || "",
       visa_entry_type: normalizeVisaEntryTypeForSelect(d?.visa_entry_type),
       visa_arrive_date: toDateInputValue(d?.visa_arrive_date),
+      border_number: d?.border_number || "",
+      sponsor_name: d?.sponsor_name || "",
+      remark: d?.remark || "",
+      loi_sponsor_file: d?.loi_sponsor_file || "",
+      visa_upload_file: d?.visa_upload_file || "",
+      extended_visa_copy_1_file: d?.extended_visa_copy_1_file || "",
+      extended_visa_copy_2_file: d?.extended_visa_copy_2_file || "",
+      extended_visa_copy_3_file: d?.extended_visa_copy_3_file || "",
+      extended_visa_copy_4_file: d?.extended_visa_copy_4_file || "",
     });
     setFile(null);
+    setVisaFiles(Object.fromEntries(VISA_DOC_FIELDS.map(({ key }) => [key, null])));
   }, [show, editingDoc?.id, fixedType, pickType, documentTypes]);
 
   const stcwTypeChoices = (documentTypes || []).filter(
@@ -6774,7 +8100,7 @@ const SeafarersDocumentModal = ({
       alert("Please select a document type.");
       return;
     }
-    if (!form.country_id) {
+    if (!showVisaFields && !form.country_id) {
       alert("Please select a country.");
       return;
     }
@@ -6807,7 +8133,16 @@ const SeafarersDocumentModal = ({
     try {
       const fd = new FormData();
       fd.append("document_type_id", dtId);
-      fd.append("country_id", form.country_id);
+      if (!showVisaFields) {
+        fd.append("country_id", form.country_id);
+      } else {
+        fd.append("country_id", "");
+        fd.append("visa_country", form.visa_country || "");
+        fd.append("visa_issue_country", form.visa_issue_country || "");
+        fd.append("border_number", form.border_number || "");
+        fd.append("sponsor_name", form.sponsor_name || "");
+        fd.append("remark", form.remark || "");
+      }
       fd.append("certificate_number", form.certificate_number || "");
       fd.append("place_of_issue", form.place_of_issue || "");
       fd.append("issue_date", String(form.issue_date).trim());
@@ -6816,11 +8151,14 @@ const SeafarersDocumentModal = ({
         fd.append("visa_category", form.visa_category || "");
         fd.append("visa_entry_type", form.visa_entry_type || "");
         fd.append("visa_arrive_date", form.visa_arrive_date || "");
+        Object.entries(visaFiles).forEach(([k, f]) => {
+          if (f) fd.append(k, f);
+        });
       }
       if (showStcwField) {
         fd.append("stcw_regulation", form.stcw_regulation || "");
       }
-      if (file) fd.append("file_path", file);
+      if (!showVisaFields && file) fd.append("file_path", file);
       const path = editingDoc
         ? `/api/candidates/${candidateId}/seafarers-documents/${editingDoc.id}`
         : `/api/candidates/${candidateId}/seafarers-documents`;
@@ -6828,7 +8166,7 @@ const SeafarersDocumentModal = ({
       else await axios.post(path, fd);
       onSubmitSuccess();
     } catch (err) {
-      alert(err?.response?.data?.error || err.message || "Save failed");
+      alert(uploadErrorMessage(err, "Save failed"));
     } finally {
       setSaving(false);
     }
@@ -6838,7 +8176,7 @@ const SeafarersDocumentModal = ({
 
   return (
     <div className="modal-overlay">
-      <div className="modal-content">
+      <div className={`modal-content${showVisaFields ? " modal-lg" : ""}`}>
         <div className="modal-header">
           <h3>{modalTitle}</h3>
           <button type="button" className="close-btn" onClick={onClose} aria-label="Close">
@@ -6864,25 +8202,62 @@ const SeafarersDocumentModal = ({
               </select>
             </div>
           )}
+          {showVisaFields ? (
+            <>
+              <div className="form-group">
+                <label>Visa for country</label>
+                <select
+                  name="visa_country"
+                  className="form-control"
+                  value={form.visa_country || ""}
+                  onChange={handleChange}
+                >
+                  <option value="">Select country</option>
+                  {(countries || []).map((country) => (
+                    <option key={country.id} value={country.id}>
+                      {country.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-group">
+                <label>Issue country</label>
+                <select
+                  name="visa_issue_country"
+                  className="form-control"
+                  value={form.visa_issue_country || ""}
+                  onChange={handleChange}
+                >
+                  <option value="">Select country</option>
+                  {(countries || []).map((country) => (
+                    <option key={country.id} value={country.id}>
+                      {country.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </>
+          ) : (
+            <div className="form-group">
+              <label>Country</label>
+              <select
+                name="country_id"
+                className="form-control"
+                value={form.country_id || ""}
+                onChange={handleChange}
+                required
+              >
+                <option value="">Select Country</option>
+                {(countries || []).map((country) => (
+                  <option key={country.id} value={country.id}>
+                    {country.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="form-group">
-            <label>Country</label>
-            <select
-              name="country_id"
-              className="form-control"
-              value={form.country_id || ""}
-              onChange={handleChange}
-              required
-            >
-              <option value="">Select Country</option>
-              {(countries || []).map((country) => (
-                <option key={country.id} value={country.id}>
-                  {country.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="form-group">
-            <label>Certificate / document number</label>
+            <label>{showVisaFields ? "Visa No." : "Certificate / document number"}</label>
             <input
               type="text"
               name="certificate_number"
@@ -6901,6 +8276,37 @@ const SeafarersDocumentModal = ({
               onChange={handleChange}
             />
           </div>
+          {showVisaFields && (
+            <>
+              <div className="form-group">
+                <label>Visa category</label>
+                <input
+                  type="text"
+                  name="visa_category"
+                  className="form-control"
+                  value={form.visa_category || ""}
+                  onChange={handleChange}
+                />
+              </div>
+              <div className="form-group">
+                <label>Type of visa entry</label>
+                <select
+                  name="visa_entry_type"
+                  className="form-control"
+                  value={form.visa_entry_type || ""}
+                  onChange={handleChange}
+                >
+                  <option value="">Select single or multiple entry</option>
+                  {!VISA_ENTRY_TYPE_OPTIONS.some((o) => o.value === form.visa_entry_type) && form.visa_entry_type ? (
+                    <option value={form.visa_entry_type}>{String(form.visa_entry_type).replace(/_/g, " ")}</option>
+                  ) : null}
+                  {VISA_ENTRY_TYPE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+            </>
+          )}
           <div className="form-group">
             <label>Issue date *</label>
             <input
@@ -6929,35 +8335,7 @@ const SeafarersDocumentModal = ({
           {showVisaFields && (
             <>
               <div className="form-group">
-                <label>Visa category</label>
-                <input
-                  type="text"
-                  name="visa_category"
-                  className="form-control"
-                  value={form.visa_category || ""}
-                  onChange={handleChange}
-                />
-              </div>
-              <div className="form-group">
-                <label>Visa type</label>
-                <select
-                  name="visa_entry_type"
-                  className="form-control"
-                  value={form.visa_entry_type || ""}
-                  onChange={handleChange}
-                  required
-                >
-                  <option value="">Select single or multiple entry</option>
-                  {!VISA_ENTRY_TYPE_OPTIONS.some((o) => o.value === form.visa_entry_type) && form.visa_entry_type ? (
-                    <option value={form.visa_entry_type}>{String(form.visa_entry_type).replace(/_/g, " ")}</option>
-                  ) : null}
-                  {VISA_ENTRY_TYPE_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="form-group">
-                <label>Arrival date</label>
+                <label>Arrival date in destination</label>
                 <input
                   type="date"
                   name="visa_arrive_date"
@@ -6965,6 +8343,80 @@ const SeafarersDocumentModal = ({
                   value={form.visa_arrive_date || ""}
                   onChange={handleChange}
                 />
+              </div>
+              <div className="form-group">
+                <label>Reference / boarder no</label>
+                <input
+                  type="text"
+                  name="border_number"
+                  className="form-control"
+                  value={form.border_number || ""}
+                  onChange={handleChange}
+                />
+              </div>
+              <div className="form-group">
+                <label>Sponsor Name</label>
+                <select
+                  name="sponsor_name"
+                  className="form-control"
+                  value={form.sponsor_name || ""}
+                  onChange={handleChange}
+                >
+                  <option value="">Select sponsor</option>
+                  {VISA_SPONSOR_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                  {form.sponsor_name
+                    && !VISA_SPONSOR_OPTIONS.some((o) => o.value === form.sponsor_name)
+                    && (
+                      <option value={form.sponsor_name}>
+                        {visaSponsorLabel(form.sponsor_name)} (current)
+                      </option>
+                    )}
+                </select>
+              </div>
+              <div className="form-group">
+                <label>Remark</label>
+                <input
+                  type="text"
+                  name="remark"
+                  className="form-control"
+                  value={form.remark || ""}
+                  onChange={handleChange}
+                />
+              </div>
+              <div className="form-group" style={{ gridColumn: "1 / -1" }}>
+                <label>Document Uploads (max 20 MB each)</label>
+                <div className="proposal-upload-grid">
+                  {VISA_DOC_FIELDS.map(({ key, label }) => {
+                    const existing = form[key];
+                    const selected = visaFiles[key];
+                    const href = existing
+                      ? (String(existing).startsWith("http")
+                        ? existing
+                        : seafarersDocFileUrl(existing, candidateId))
+                      : null;
+                    return (
+                      <div key={key} className="proposal-upload-item">
+                        <div className="proposal-upload-label">{label}</div>
+                        <input
+                          type="file"
+                          className="form-control"
+                          accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx"
+                          onChange={(e) => {
+                            const picked = pickDocumentFile(e);
+                            setVisaFiles((prev) => ({ ...prev, [key]: picked }));
+                          }}
+                        />
+                        {selected ? (
+                          <span className="text-muted small">{selected.name} (selected)</span>
+                        ) : href ? (
+                          <a href={href} target="_blank" rel="noopener noreferrer" className="view-file-btn">View current</a>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </>
           )}
@@ -6980,15 +8432,17 @@ const SeafarersDocumentModal = ({
               />
             </div>
           )}
-          <div className="form-group">
-            <label>Upload document {editingDoc ? "(optional — leave empty to keep current file)" : ""}</label>
-            <input
-              type="file"
-              className="form-control"
-              accept=".pdf,.jpg,.jpeg,.png,.gif,.webp"
-              onChange={(e) => setFile(e.target.files?.[0] || null)}
-            />
-          </div>
+          {!showVisaFields && (
+            <div className="form-group">
+              <label>Upload document {editingDoc ? "(optional — leave empty to keep current file)" : ""}</label>
+              <input
+                type="file"
+                className="form-control"
+                accept=".pdf,.jpg,.jpeg,.png,.gif,.webp"
+                onChange={(e) => setFile(pickDocumentFile(e))}
+              />
+            </div>
+          )}
           <div className="modal-footer">
             <button type="button" className="btn btn-secondary" onClick={onClose}>
               Cancel
@@ -7156,7 +8610,7 @@ const LicenseFormModal = ({
           </div>
           <div className="form-group">
             <label>Upload scan {editingDoc ? "(optional)" : ""}</label>
-            <input type="file" className="form-control" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+            <input type="file" className="form-control" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp" onChange={(e) => setFile(pickDocumentFile(e))} />
           </div>
           <div className="modal-footer">
             <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
@@ -7274,7 +8728,7 @@ const EducationFormModal = ({
           </div>
           <div className="form-group">
             <label>Upload document (optional)</label>
-            <input type="file" className="form-control" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+            <input type="file" className="form-control" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp" onChange={(e) => setFile(pickDocumentFile(e))} />
           </div>
           <div className="modal-footer">
             <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
@@ -7405,7 +8859,7 @@ const VerificationFormModal = ({
           </div>
           <div className="form-group">
             <label>Upload file {editingDoc ? "(optional — leave empty to keep current)" : "(optional)"}</label>
-            <input type="file" className="form-control" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+            <input type="file" className="form-control" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx" onChange={(e) => setFile(pickDocumentFile(e))} />
           </div>
           <div className="modal-footer">
             <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
@@ -7538,7 +8992,7 @@ const DceValueCertificateModal = ({
           </div>
           <div className="form-group">
             <label>File {editingDoc ? "(optional)" : ""}</label>
-            <input type="file" className="form-control" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+            <input type="file" className="form-control" accept=".pdf,.jpg,.jpeg,.png,.gif,.webp" onChange={(e) => setFile(pickDocumentFile(e))} />
           </div>
           <div className="modal-footer">
             <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
