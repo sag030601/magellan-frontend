@@ -11,6 +11,7 @@ const API = import.meta.env.VITE_API_URL || "";
 const INPUT_CLS = "form-control";
 const FIELD_WRAP = "candidates-field";
 const ADD_LABEL = "block text-xs font-semibold mb-0.5";
+const RequiredMark = () => <span className="text-red-600" aria-hidden="true"> *</span>;
 const PAGE_SIZES = [25, 50, 100, 200];
 const FILTER_MEMORY_KEY = "candidates-list";
 
@@ -291,11 +292,11 @@ async function fetchSearchOptions() {
 
 // ── Form fields ─────────────────────────────────────────────────────────────
 
-function SelectField({ label, placeholder, options, value, onChange }) {
+function SelectField({ label, placeholder, options, value, onChange, required = false }) {
   return (
     <div className={FIELD_WRAP}>
-      <label>{label}</label>
-      <select className={INPUT_CLS} value={value} onChange={onChange}>
+      <label>{label}{required ? <RequiredMark /> : null}</label>
+      <select className={INPUT_CLS} value={value} onChange={onChange} required={required}>
         <option value="">{placeholder}</option>
         {(options || []).map((o, i) => <option key={`${o.id}-${i}`} value={String(o.id)}>{o.name ?? o.option ?? ""}</option>)}
       </select>
@@ -306,7 +307,7 @@ function SelectField({ label, placeholder, options, value, onChange }) {
 function InputField({ label, placeholder, type = "text", value, onChange, required = false }) {
   return (
     <div className={FIELD_WRAP}>
-      <label>{label}{required ? " *" : ""}</label>
+      <label>{label}{required ? <RequiredMark /> : null}</label>
       <input type={type} className={INPUT_CLS} placeholder={placeholder} value={value} onChange={onChange} required={required} />
     </div>
   );
@@ -464,17 +465,30 @@ export default function Candidates() {
     e.preventDefault();
     const given = addForm.given_name.trim();
     const surname = addForm.surname.trim();
-    if (!given || !surname) {
-      setAddError("Given name and surname are required.");
-      return;
-    }
     const ymd = /^\d{4}-\d{2}-\d{2}$/;
-    if (addForm.passport_number.trim() && !ymd.test(String(addForm.passport_expiry_date || "").trim())) {
-      setAddError("Passport expiry date is required when passport number is entered.");
+    const missing = [];
+    if (!surname) missing.push("Surname");
+    if (!given) missing.push("Name");
+    if (!String(addForm.gender || "").trim()) missing.push("Gender");
+    if (!String(addForm.rank_id || "").trim()) missing.push("Rank");
+    if (!String(addForm.vessel_type_id || "").trim()) missing.push("Vessel type");
+    if (!String(addForm.nationality_id || "").trim()) missing.push("Nationality");
+    if (!ymd.test(String(addForm.date_of_birth || "").trim())) missing.push("Date of birth");
+    if (!addForm.passport_number.trim()) missing.push("Passport number");
+    if (!ymd.test(String(addForm.passport_expiry_date || "").trim())) missing.push("Passport expiry date");
+    if (!addForm.cdc_number.trim()) missing.push("CDC number");
+    if (!ymd.test(String(addForm.cdc_expiry_date || "").trim())) missing.push("CDC expiry date");
+    if (!addForm.email_id.trim()) missing.push("Email");
+    if (!addForm.contact_no_1.trim()) missing.push("Contact no.");
+    if (!String(addForm.availability_status_id || "").trim()) missing.push("Availability status");
+    if (!String(addForm.aramco_charter || "").trim()) missing.push("Aramco charter");
+    if (!addCvFile) missing.push("CV Upload");
+    if (missing.length) {
+      setAddError(`Please fill the required fields: ${missing.join(", ")}.`);
       return;
     }
-    if (addForm.cdc_number.trim() && !ymd.test(String(addForm.cdc_expiry_date || "").trim())) {
-      setAddError("CDC expiry date is required when CDC number is entered.");
+    if (addForm.email_id.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addForm.email_id.trim())) {
+      setAddError("Please enter a valid email address.");
       return;
     }
     setAddSaving(true);
@@ -487,8 +501,8 @@ export default function Candidates() {
         rank_id: addForm.rank_id || undefined,
         vessel_type_id: addForm.vessel_type_id || undefined,
         nationality_id: addForm.nationality_id || undefined,
-        religion: addForm.religion.trim() || undefined,
-        marital_status: addForm.marital_status || undefined,
+        religion: addForm.religion.trim().toLowerCase() || undefined,
+        marital_status: addForm.marital_status ? addForm.marital_status.toLowerCase() : undefined,
         place_of_birth: addForm.place_of_birth.trim() || undefined,
         date_of_birth: addForm.date_of_birth || undefined,
         passport_number: addForm.passport_number.trim() || undefined,
@@ -506,7 +520,7 @@ export default function Candidates() {
         followup_date: addForm.followup_date || undefined,
         aramco_charter: addForm.aramco_charter || undefined,
         remark: addForm.remark.trim() || undefined,
-        gender: addForm.gender || undefined,
+        gender: addForm.gender ? addForm.gender.toLowerCase() : undefined,
       };
       const formData = new FormData();
       Object.entries(payload).forEach(([k, v]) => {
@@ -619,7 +633,7 @@ export default function Candidates() {
           <form onSubmit={handleAddCandidate}>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-x-3 gap-y-2">
               <div className="mb-2">
-                <label className={ADD_LABEL}>Surname *</label>
+                <label className={ADD_LABEL}>Surname<RequiredMark /></label>
                 <input
                   className={INPUT_CLS}
                   value={addForm.surname}
@@ -630,7 +644,7 @@ export default function Candidates() {
                 />
               </div>
               <div className="mb-2">
-                <label className={ADD_LABEL}>Name *</label>
+                <label className={ADD_LABEL}>Name<RequiredMark /></label>
                 <input
                   className={INPUT_CLS}
                   value={addForm.given_name}
@@ -650,12 +664,12 @@ export default function Candidates() {
                 />
               </div>
               <div className="mb-2">
-                <label className={ADD_LABEL}>Gender</label>
-                <select className={INPUT_CLS} value={addForm.gender} onChange={(e) => setAddField("gender", e.target.value)}>
+                <label className={ADD_LABEL}>Gender<RequiredMark /></label>
+                <select className={INPUT_CLS} value={addForm.gender} onChange={(e) => setAddField("gender", e.target.value)} required>
                   <option value="">Select</option>
-                  <option value="Male">Male</option>
-                  <option value="Female">Female</option>
-                  <option value="Other">Other</option>
+                  <option value="male">Male</option>
+                  <option value="female">Female</option>
+                  <option value="other">Other</option>
                 </select>
               </div>
               <SelectField
@@ -664,6 +678,7 @@ export default function Candidates() {
                 options={opts.ranks}
                 value={addForm.rank_id}
                 onChange={(e) => setAddField("rank_id", e.target.value)}
+                required
               />
               <SelectField
                 label="Vessel type"
@@ -671,6 +686,7 @@ export default function Candidates() {
                 options={opts.vesselTypes}
                 value={addForm.vessel_type_id}
                 onChange={(e) => setAddField("vessel_type_id", e.target.value)}
+                required
               />
               <SelectField
                 label="Nationality"
@@ -678,21 +694,23 @@ export default function Candidates() {
                 options={opts.countries}
                 value={addForm.nationality_id}
                 onChange={(e) => setAddField("nationality_id", e.target.value)}
+                required
               />
-              <InputField
-                label="Religion"
-                placeholder="Religion"
-                value={addForm.religion}
-                onChange={(e) => setAddField("religion", e.target.value)}
-              />
+              <div className="mb-2">
+                <label className={ADD_LABEL}>Religion</label>
+                <select className={INPUT_CLS} value={addForm.religion} onChange={(e) => setAddField("religion", e.target.value)}>
+                  <option value="">Select</option>
+                  <option value="hindu">Hindu</option>
+                  <option value="muslim">Muslim</option>
+                  <option value="christian">Christian</option>
+                </select>
+              </div>
               <div className="mb-2">
                 <label className={ADD_LABEL}>Marital status</label>
                 <select className={INPUT_CLS} value={addForm.marital_status} onChange={(e) => setAddField("marital_status", e.target.value)}>
                   <option value="">Select</option>
-                  <option value="Single">Single</option>
-                  <option value="Married">Married</option>
-                  <option value="Divorced">Divorced</option>
-                  <option value="Widowed">Widowed</option>
+                  <option value="married">Married</option>
+                  <option value="single">Single</option>
                 </select>
               </div>
               <InputField
@@ -701,6 +719,7 @@ export default function Candidates() {
                 type="date"
                 value={addForm.date_of_birth}
                 onChange={(e) => setAddField("date_of_birth", e.target.value)}
+                required
               />
               <InputField
                 label="Place of birth"
@@ -713,6 +732,7 @@ export default function Candidates() {
                 placeholder="Passport number"
                 value={addForm.passport_number}
                 onChange={(e) => setAddField("passport_number", e.target.value)}
+                required
               />
               <InputField
                 label="Passport issue date"
@@ -727,13 +747,14 @@ export default function Candidates() {
                 type="date"
                 value={addForm.passport_expiry_date}
                 onChange={(e) => setAddField("passport_expiry_date", e.target.value)}
-                required={Boolean(addForm.passport_number.trim())}
+                required
               />
               <InputField
                 label="CDC number"
                 placeholder="CDC number"
                 value={addForm.cdc_number}
                 onChange={(e) => setAddField("cdc_number", e.target.value)}
+                required
               />
               <InputField
                 label="CDC issue date"
@@ -748,7 +769,7 @@ export default function Candidates() {
                 type="date"
                 value={addForm.cdc_expiry_date}
                 onChange={(e) => setAddField("cdc_expiry_date", e.target.value)}
-                required={Boolean(addForm.cdc_number.trim())}
+                required
               />
               <InputField
                 label="Indos number"
@@ -768,12 +789,14 @@ export default function Candidates() {
                 type="email"
                 value={addForm.email_id}
                 onChange={(e) => setAddField("email_id", e.target.value)}
+                required
               />
               <InputField
                 label="Contact no."
                 placeholder="Contact"
                 value={addForm.contact_no_1}
                 onChange={(e) => setAddField("contact_no_1", e.target.value)}
+                required
               />
               <SelectField
                 label="Availability status"
@@ -781,6 +804,7 @@ export default function Candidates() {
                 options={opts.availabilityStatus}
                 value={addForm.availability_status_id}
                 onChange={(e) => setAddField("availability_status_id", e.target.value)}
+                required
               />
               <InputField
                 label="Availability date"
@@ -797,8 +821,8 @@ export default function Candidates() {
                 onChange={(e) => setAddField("followup_date", e.target.value)}
               />
               <div className="mb-2">
-                <label className={ADD_LABEL}>Aramco charter</label>
-                <select className={INPUT_CLS} value={addForm.aramco_charter} onChange={(e) => setAddField("aramco_charter", e.target.value)}>
+                <label className={ADD_LABEL}>Aramco charter<RequiredMark /></label>
+                <select className={INPUT_CLS} value={addForm.aramco_charter} onChange={(e) => setAddField("aramco_charter", e.target.value)} required>
                   <option value="">Select</option>
                   <option value="yes">Yes</option>
                   <option value="no">No</option>
@@ -814,12 +838,13 @@ export default function Candidates() {
                 />
               </div>
               <div className="mb-2">
-                <label className={ADD_LABEL}>CV Upload</label>
+                <label className={ADD_LABEL}>CV Upload<RequiredMark /></label>
                 <input
                   type="file"
                   className={INPUT_CLS}
                   accept=".pdf,.doc,.docx"
                   onChange={(e) => setAddCvFile(pickDocumentFile(e))}
+                  required={!addCvFile}
                 />
               </div>
               <div className="mb-2 lg:col-span-2">

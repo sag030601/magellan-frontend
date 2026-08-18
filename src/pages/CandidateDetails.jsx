@@ -312,6 +312,36 @@ function labelForLicenceCapacity(value) {
   return opt ? opt.label : String(value).replace(/_/g, " ").toUpperCase();
 }
 
+/** Calendar YYYY-MM-DD from API epoch / ISO / Date. Uses UTC date parts so a stored midnight does not slip a day. */
+function calendarYmdFromValue(val) {
+  if (val == null || val === "" || val === 0 || val === "0") return "";
+  if (typeof val === "string" && /^\d{4}-\d{2}-\d{2}/.test(val)) return val.slice(0, 10);
+  let d;
+  if (typeof val === "string" && /^\d+$/.test(val.trim())) {
+    const n = Number(val.trim());
+    if (n <= 0) return "";
+    d = new Date(n < 1e12 ? n * 1000 : n);
+  } else if (typeof val === "number") {
+    if (val <= 0) return "";
+    d = new Date(val < 1e12 ? val * 1000 : val);
+  } else {
+    d = new Date(val);
+  }
+  if (Number.isNaN(d.getTime())) return "";
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** Month/date/year display, e.g. 6/4/2000 — matches the candidate header DOB. */
+function formatDateMonthDayYear(val) {
+  const iso = calendarYmdFromValue(val);
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-");
+  return `${Number(m)}/${Number(d)}/${y}`;
+}
+
 /** Match legacy blade date display (dd-mm-yyyy). */
 function formatDocDate(val) {
   if (val == null || val === "") return "-";
@@ -581,6 +611,10 @@ const CandidateDetails = () => {
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportMenuCoords, setExportMenuCoords] = useState(null);
+  const [aramcoPkgOpen, setAramcoPkgOpen] = useState(false);
+  const [aramcoPkgDocs, setAramcoPkgDocs] = useState([]);
+  const [aramcoPkgSelected, setAramcoPkgSelected] = useState({});
+  const [aramcoPkgLoading, setAramcoPkgLoading] = useState(false);
   const exportMenuRef = useRef(null);
   const exportDropdownBtnRef = useRef(null);
   const exportDropdownMenuRef = useRef(null);
@@ -600,6 +634,8 @@ const CandidateDetails = () => {
   const [preJoiningTravelFile, setPreJoiningTravelFile] = useState(null);
   /** Multipart file for flag state doc add/edit. */
   const [flagStateDocFile, setFlagStateDocFile] = useState(null);
+  /** Multipart file for external / sea service document upload. */
+  const [seaServiceDocFile, setSeaServiceDocFile] = useState(null);
   /** Multipart files for proposal document uploads. */
   const [proposalFiles, setProposalFiles] = useState({
     cv_package_file: null,
@@ -645,7 +681,7 @@ const CandidateDetails = () => {
 
   const openGenericModal = async (type, row = null) => {
     const defaults = {
-      services: { rank: "", vessel_name: "", flag: "", vessel_type: "", grt: "", dwt: "", bhp: "", engine_type: "", sign_on_date: "", sign_off_date: "", period: "", reason_of_sign_off: "", owner_company: "" },
+      services: { rank: "", vessel_name: "", flag: "", vessel_type: "", grt: "", dwt: "", bhp: "", engine_type: "", sign_on_date: "", sign_off_date: "", period: "", reason_of_sign_off: "", owner_company: "", file_path: "" },
       proposal: {
         rank: "",
         vessel_name: "",
@@ -702,6 +738,7 @@ const CandidateDetails = () => {
     }
     if (type === "medicals") setMedicalDocFile(null);
     if (type === "flagstate") setFlagStateDocFile(null);
+    if (type === "services") setSeaServiceDocFile(null);
     if (type === "proposal") {
       setProposalFiles({
         cv_package_file: null,
@@ -767,6 +804,7 @@ const CandidateDetails = () => {
     setMedicalDocFile(null);
     setPreJoiningTravelFile(null);
     setFlagStateDocFile(null);
+    setSeaServiceDocFile(null);
     setProposalFiles({
       cv_package_file: null,
       proposal_email_file: null,
@@ -872,6 +910,25 @@ const CandidateDetails = () => {
           if (file) fd.append(k, file);
         });
         await axios[method](url, fd);
+      } else if (type === "services") {
+        const fd = new FormData();
+        [
+          "rank",
+          "vessel_name",
+          "flag",
+          "vessel_type",
+          "grt",
+          "dwt",
+          "bhp",
+          "engine_type",
+          "sign_on_date",
+          "sign_off_date",
+          "period",
+          "reason_of_sign_off",
+          "owner_company",
+        ].forEach((k) => fd.append(k, form[k] ?? ""));
+        if (seaServiceDocFile) fd.append("file", seaServiceDocFile);
+        await axios[method](url, fd);
       } else {
         await axios[method](url, form);
       }
@@ -924,6 +981,95 @@ const CandidateDetails = () => {
       a.click();
       a.remove();
       URL.revokeObjectURL(u);
+    } catch (e) {
+      alert(e?.message || "Download failed");
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const openAramcoCvPackage = async () => {
+    const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+    setExportMenuOpen(false);
+    setAramcoPkgOpen(true);
+    setAramcoPkgLoading(true);
+    setAramcoPkgSelected({});
+    try {
+      const r = await fetch(`${apiBase}/api/candidates/${id}/export/aramco-cv-package/documents`, {
+        headers: authHeaders(),
+      });
+      if (!r.ok) throw new Error("Could not load document list");
+      const data = await r.json();
+      setAramcoPkgDocs(Array.isArray(data.documents) ? data.documents : []);
+    } catch (e) {
+      alert(e?.message || "Could not load document list");
+      setAramcoPkgOpen(false);
+    } finally {
+      setAramcoPkgLoading(false);
+    }
+  };
+
+  const toggleAramcoPkgDoc = (key, hasFile) => {
+    if (!hasFile) return;
+    setAramcoPkgSelected((prev) => {
+      if (prev[key] != null) {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      }
+      const used = new Set(Object.values(prev).map((n) => Number(n)).filter((n) => n > 0));
+      let n = 1;
+      while (used.has(n)) n += 1;
+      return { ...prev, [key]: n };
+    });
+  };
+
+  const setAramcoPkgOrder = (key, raw) => {
+    const n = parseInt(String(raw).replace(/[^\d]/g, ""), 10);
+    setAramcoPkgSelected((prev) => {
+      if (prev[key] == null) return prev;
+      return { ...prev, [key]: Number.isFinite(n) && n > 0 ? n : "" };
+    });
+  };
+
+  const downloadAramcoCvPackage = async () => {
+    const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+    const documents = Object.entries(aramcoPkgSelected)
+      .filter(([, order]) => order !== "" && Number(order) > 0)
+      .map(([key, order]) => ({ key, order: Number(order) }))
+      .sort((a, b) => a.order - b.order);
+    setExportBusy(true);
+    try {
+      const r = await fetch(`${apiBase}/api/candidates/${id}/export/aramco-cv-package`, {
+        method: "POST",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ documents }),
+      });
+      if (!r.ok) {
+        let msg = r.statusText;
+        try {
+          const j = await r.json();
+          if (j.error) msg = j.error;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(msg);
+      }
+      const blob = await r.blob();
+      const slug = [candidateData.surname, candidateData.given_name]
+        .filter((x) => x != null && String(x).trim())
+        .map((x) => String(x).trim().replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_-]/g, ""))
+        .filter(Boolean)
+        .join("_") || `crew_${id}`;
+      const a = document.createElement("a");
+      const u = URL.createObjectURL(blob);
+      a.href = u;
+      a.download = `Aramco_CV_Package_${slug}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(u);
+      setAramcoPkgOpen(false);
     } catch (e) {
       alert(e?.message || "Download failed");
     } finally {
@@ -1252,9 +1398,11 @@ const CandidateDetails = () => {
         nok_relationship: c.nok_relationship || "",
         nok_contact_number: c.nok_contact_number || "",
         nationality_id: c.nationality_id || "",
-        gender: c.gender || "",
-        religion: c.religion || "",
-        marital_status: c.marital_status || "",
+        gender: c.gender ? String(c.gender).trim().toLowerCase() : "",
+        religion: c.religion ? String(c.religion).trim().toLowerCase() : "",
+        marital_status: c.marital_status
+          ? String(c.marital_status).trim().toLowerCase().replace("unmarried", "single")
+          : "",
         domestic_airport: c.domestic_airport || "",
         international_airport: c.international_airport || "",
         province: c.province || "",
@@ -1265,7 +1413,12 @@ const CandidateDetails = () => {
       setCandidateData(normalized);
       // Don't clobber in-progress personal-info edits with a background refresh.
       if (!personalInfoEditingRef.current) {
-        setFormData(candidate);
+        setFormData({
+          ...candidate,
+          gender: String(candidate.gender || "").trim().toLowerCase(),
+          religion: String(candidate.religion || "").trim().toLowerCase(),
+          marital_status: String(candidate.marital_status || "").trim().toLowerCase().replace("unmarried", "single"),
+        });
       }
       setAdditionalInfo({
         height: normalized.height || "",
@@ -2444,7 +2597,7 @@ const CandidateDetails = () => {
               <span className="summary-label">Date of Birth</span>
               <span className="summary-value">
                 {candidateData.dob
-                  ? new Date(candidateData.dob).toLocaleDateString()
+                  ? formatDateMonthDayYear(candidateData.dob) || "N/A"
                   : "N/A"}
               </span>
             </div>
@@ -2557,6 +2710,15 @@ const CandidateDetails = () => {
                     <button
                       type="button"
                       className="export-dropdown-item"
+                      onClick={() => openAramcoCvPackage()}
+                    >
+                      Aramco CV Package
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      className="export-dropdown-item"
                       disabled={!candidateData.cv}
                       title={candidateData.cv ? "Uploaded CV / resume file" : "No resume file on file"}
                       onClick={() => downloadCandidateResume()}
@@ -2604,7 +2766,7 @@ const CandidateDetails = () => {
               role="tab"
               aria-selected={activeMainTab === "record_of_sea_services"}
             >
-              Services
+              External Service
             </button>
           </li>
           <li className="nav-item">
@@ -2921,7 +3083,7 @@ const CandidateDetails = () => {
               seafarersDocs={seafarersDocs}
               onAddNew={() => openSeafarersModal({ pickType: true })}
               onDelete={(docId) => handleDeleteDocument(docId, "seafarers")}
-              onEdit={(doc) => openSeafarersModal({ editingDoc: doc })}
+              onEdit={(doc) => openSeafarersModal({ editingDoc: doc, pickType: true })}
             />
           )}
 
@@ -2978,12 +3140,12 @@ const CandidateDetails = () => {
         </div>
       )}
 
-      {/* Services - Record of sea services */}
+      {/* External Service - Record of sea services */}
       {activeMainTab === "record_of_sea_services" && (
         <div className="tab-content">
           <div className="tab-content-section">
             <div className="section-header-row">
-              <h6 className="tab-section-title">Record of sea services</h6>
+              <h6 className="tab-section-title">External Service</h6>
               <button type="button" className="btn btn-sm btn-info" onClick={() => openGenericModal("services")}>
                 Add New
               </button>
@@ -3007,6 +3169,7 @@ const CandidateDetails = () => {
                       <th>Period</th>
                       <th>Reason of Sign off</th>
                       <th>Owner/Company</th>
+                      <th>Document</th>
                       <th>Action</th>
                     </tr>
                   </thead>
@@ -3026,6 +3189,23 @@ const CandidateDetails = () => {
                         <td>{row.period ?? "-"}</td>
                         <td>{row.reason_of_sign_off ?? "-"}</td>
                         <td title={row.owner_company}>{row.owner_company ? (String(row.owner_company).length > 15 ? `${String(row.owner_company).slice(0, 15)}...` : row.owner_company) : "-"}</td>
+                        <td>
+                          {row.file_path ? (
+                            <a
+                              href={
+                                String(row.file_path).startsWith("http")
+                                  ? row.file_path
+                                  : `${import.meta.env.VITE_API_URL || ""}/uploads/documents/${id}/${String(row.file_path).replace(/^\/+/, "").split("/").pop()}`
+                              }
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              View
+                            </a>
+                          ) : (
+                            "-"
+                          )}
+                        </td>
                         <td className="action-cell-with-audit">
                           <ActionToolbar record={row}>
                             <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("services", row)}><i className="fas fa-pen" /></button>
@@ -3744,6 +3924,77 @@ const CandidateDetails = () => {
         </div>
       )}
 
+      {aramcoPkgOpen && (
+        <div className="modal-overlay" onClick={() => !exportBusy && setAramcoPkgOpen(false)}>
+          <div className="modal-content modal-lg aramco-pkg-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Aramco CV Package</h3>
+              <button type="button" className="close-btn" onClick={() => !exportBusy && setAramcoPkgOpen(false)}>&times;</button>
+            </div>
+            <div className="modal-body">
+              <p className="aramco-pkg-note">
+                Pages 1–5 are always included: cover letter, Aramco checklist, Aramco CV, work experience, and previous approval letter.
+                Tick supporting documents below and set the order number. They are appended in that numbered order.
+              </p>
+              {aramcoPkgLoading ? (
+                <p>Loading documents…</p>
+              ) : aramcoPkgDocs.length === 0 ? (
+                <p>No uploaded documents found for this crew member.</p>
+              ) : (
+                <div className="aramco-pkg-list">
+                  {Object.entries(
+                    aramcoPkgDocs.reduce((acc, doc) => {
+                      const g = doc.group || "Other";
+                      if (!acc[g]) acc[g] = [];
+                      acc[g].push(doc);
+                      return acc;
+                    }, {}),
+                  ).map(([group, docs]) => (
+                    <div key={group} className="aramco-pkg-group">
+                      <div className="aramco-pkg-group-title">{group}</div>
+                      {docs.map((doc) => {
+                        const checked = aramcoPkgSelected[doc.key] != null;
+                        return (
+                          <label key={doc.key} className={`aramco-pkg-row${doc.hasFile ? "" : " is-disabled"}`}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={!doc.hasFile}
+                              onChange={() => toggleAramcoPkgDoc(doc.key, doc.hasFile)}
+                            />
+                            <input
+                              type="number"
+                              min="1"
+                              className="aramco-pkg-order"
+                              disabled={!checked}
+                              value={checked ? aramcoPkgSelected[doc.key] : ""}
+                              onChange={(e) => setAramcoPkgOrder(doc.key, e.target.value)}
+                              title="Order in PDF"
+                            />
+                            <span className="aramco-pkg-label">
+                              {doc.label}
+                              {!doc.hasFile ? <em> (no file)</em> : null}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn btn-secondary" disabled={exportBusy} onClick={() => setAramcoPkgOpen(false)}>
+                Cancel
+              </button>
+              <button type="button" className="btn btn-primary" disabled={exportBusy || aramcoPkgLoading} onClick={downloadAramcoCvPackage}>
+                {exportBusy ? "Preparing PDF…" : "Download PDF"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {remarkModal.open && (
         <div className="modal-overlay" onClick={closeRemarkModal}>
           <div className="modal-content modal-lg" onClick={(e) => e.stopPropagation()}>
@@ -3887,7 +4138,7 @@ const CandidateDetails = () => {
           <div className="modal-content modal-lg" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3>{genericModal.editingId ? "Edit" : "Add"} {
-                { services: "Sea Service Record", proposal: "Proposal", medicals: "Pre-joining Medical", flagstate: "Flag State Document", prejoining: "Pre-joining Travel Document" }[genericModal.type]
+                { services: "External Service", proposal: "Proposal", medicals: "Pre-joining Medical", flagstate: "Flag State Document", prejoining: "Pre-joining Travel Document" }[genericModal.type]
               }</h3>
               <button className="close-btn" onClick={closeGenericModal}>&times;</button>
             </div>
@@ -3974,6 +4225,37 @@ const CandidateDetails = () => {
                     value={genericModal.form.owner_company}
                     onChange={(e) => handleGenericFormChange("owner_company", e.target.value)}
                   />
+                </div>
+                <div className="form-group" style={{ gridColumn: "1 / -1" }}>
+                  <label>
+                    Document Upload
+                    {genericModal.editingId ? " — leave empty to keep current file" : ""}
+                  </label>
+                  <input
+                    type="file"
+                    className="form-control"
+                    accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx"
+                    onChange={(e) => setSeaServiceDocFile(pickDocumentFile(e))}
+                  />
+                  {seaServiceDocFile && (
+                    <p className="text-muted small mb-0 mt-1">Selected: {seaServiceDocFile.name}</p>
+                  )}
+                  {genericModal.editingId && genericModal.form.file_path && !seaServiceDocFile && (
+                    <p className="text-muted small mb-0 mt-1">
+                      Current file:{" "}
+                      <a
+                        href={
+                          String(genericModal.form.file_path).startsWith("http")
+                            ? genericModal.form.file_path
+                            : `${import.meta.env.VITE_API_URL || ""}/uploads/documents/${id}/${String(genericModal.form.file_path).replace(/^\/+/, "").split("/").pop()}`
+                        }
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        View
+                      </a>
+                    </p>
+                  )}
                 </div>
               </>)}
 
@@ -5036,28 +5318,7 @@ const CandidateDetails = () => {
 };
 
 /** API dates may be epoch seconds, epoch ms (from normalizeDoc), or YYYY-MM-DD. */
-const toDateInputValue = (val) => {
-  if (val == null || val === "" || val === 0 || val === "0") return "";
-  if (typeof val === "string" && /^\d{4}-\d{2}-\d{2}/.test(val)) return val.slice(0, 10);
-  if (typeof val === "string" && /^\d+$/.test(val.trim())) {
-    const n = Number(val.trim());
-    if (n <= 0) return "";
-    const ms = n < 1e12 ? n * 1000 : n;
-    const d = new Date(ms);
-    if (Number.isNaN(d.getTime())) return "";
-    return d.toISOString().slice(0, 10);
-  }
-  if (typeof val === "number") {
-    if (val <= 0) return "";
-    const ms = val < 1e12 ? val * 1000 : val;
-    const d = new Date(ms);
-    if (Number.isNaN(d.getTime())) return "";
-    return d.toISOString().slice(0, 10);
-  }
-  const d = new Date(val);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toISOString().slice(0, 10);
-};
+const toDateInputValue = (val) => calendarYmdFromValue(val);
 
 // Personal Info form – aligned with candidate_edit.blade.php BasicDetail and API response
 const BasicDetailsForm = ({
@@ -5190,16 +5451,25 @@ const BasicDetailsForm = ({
           </div>
           <div className="form-group">
             <label>DATE OF BIRTH</label>
-            <input
-              type="date"
-              name="date_of_birth"
-              className="form-control"
-              value={toDateInputValue(formData.date_of_birth)}
-              onChange={handleInputChange}
-              required
-              readOnly={frozen}
-              disabled={frozen}
-            />
+            {frozen ? (
+              <input
+                type="text"
+                className="form-control"
+                value={formData.date_of_birth ? formatDateMonthDayYear(formData.date_of_birth) : ""}
+                readOnly
+                disabled
+              />
+            ) : (
+              <input
+                type="date"
+                name="date_of_birth"
+                className="form-control"
+                lang="en-US"
+                value={toDateInputValue(formData.date_of_birth)}
+                onChange={handleInputChange}
+                required
+              />
+            )}
           </div>
           <div className="form-group">
             <label>PLACE OF BIRTH</label>
@@ -8061,8 +8331,9 @@ const SeafarersDocumentModal = ({
   );
 
   const resolvedDocumentTypeId = () => {
-    if (editingDoc?.document_type_id != null) return String(editingDoc.document_type_id);
+    // When the type picker is shown (Add/Edit STCW), use the selected dropdown value.
     if (pickType) return pickedTypeId;
+    if (editingDoc?.document_type_id != null) return String(editingDoc.document_type_id);
     if (fixedType) {
       const found = documentTypes.find((d) => d.name === fixedType);
       return found ? String(found.id) : "";
@@ -8082,6 +8353,7 @@ const SeafarersDocumentModal = ({
     (editingDoc && !MAIN_SEAFARER_DOC_NAMES.includes(editingDoc.document_name));
 
   const modalTitle = (() => {
+    if (pickType && editingDoc) return `Edit ${editingDoc.document_name || "STCW document"}`;
     if (pickType) return "Add STCW / training certificate";
     if (editingDoc) return `Edit ${editingDoc.document_name || "document"}`;
     if (fixedType) return `Add ${fixedType}`;
