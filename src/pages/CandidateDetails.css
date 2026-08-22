@@ -282,13 +282,13 @@
 
 .main-tabs {
   margin-bottom: 0;
-  overflow-x: hidden;
+  overflow-x: auto;
   padding-bottom: 0;
   scrollbar-width: thin;
 }
 
 .main-tabs .nav-tabs {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   min-width: 0;
   gap: 0;
   margin: 0;
@@ -317,7 +317,7 @@
   background: transparent;
   border: none;
   border-radius: 8px;
-  padding: 10px 14px;
+  padding: 10px 11px;
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -1749,6 +1749,47 @@
   transform: scale(0.96);
 }
 
+.doc-action-btn:disabled,
+.doc-action-btn:disabled:hover {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: transparent;
+  color: var(--text-tertiary);
+  transform: none;
+}
+
+.forms-letters-status {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.forms-letters-status--template {
+  color: var(--text-secondary);
+}
+
+.forms-letters-status--generated {
+  color: var(--success, #16a34a);
+}
+
+.forms-letters-note {
+  margin: -6px 0 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.forms-letters-name {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.forms-letters-table .doc-list-table thead th:nth-child(2),
+.forms-letters-table .doc-list-table td.forms-letters-name {
+  width: 56%;
+  min-width: 220px;
+}
+
 .doc-action-icon-svg {
   width: 11px;
   height: 11px;
@@ -2115,7 +2156,7 @@
   .form-grid { grid-template-columns: 1fr; }
   .info-grid { grid-template-columns: 1fr; }
   .main-tabs .nav-link {
-    padding: 9px 12px;
+    padding: 9px 10px;
     font-size: 12px;
   }
 

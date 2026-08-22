@@ -367,6 +367,106 @@ function DocFileCell({ url }) {
   );
 }
 
+/** Company-generated forms/letters catalog — UI structure only; no APIs yet. */
+const FORMS_TABS = [
+  { key: "cv_company_owner", label: "CV-Company / Owner" },
+  { key: "pre_joining_seafarers", label: "Pre-Joining Forms - Seafarers" },
+  { key: "sea_rpsl_contract", label: "SEA / RPSL Contract" },
+  { key: "company_policy", label: "Company Policy & Terms" },
+  { key: "covering_letters", label: "Company Covering Letters" },
+  { key: "pre_departure", label: "Pre-Departure Declaration" },
+  { key: "sea_service_letters", label: "Experience / Sea Service Letters" },
+  { key: "full_cv_package", label: "Full CV Package Download", note: "One File" },
+  { key: "document_checklists", label: "Document Checklists" },
+  { key: "email_templates", label: "Email Templates" },
+];
+
+const FORMS_CATALOG = {
+  cv_company_owner: [
+    { key: "magellan_mcm_cv", name: "Magellan (MCM CV Form)" },
+    { key: "aramco_cv", name: "Aramco (CV Form)" },
+  ],
+  pre_joining_seafarers: [
+    { key: "anti_bribery", name: "Anti Bribery Form" },
+    { key: "criminal_civil_declaration", name: "Criminal & Civil Declaration Form" },
+    { key: "drug_alcohol_declaration", name: "Drug & Alcohol Declaration Form" },
+    { key: "marpol_declaration", name: "MARPOL - Read and Understood Declaration" },
+    { key: "nda_policy", name: "Non-Disclosure Agreement (NDA) Policy" },
+    { key: "cyber_security_policy", name: "Cyber Security Policy" },
+    { key: "anti_smuggling_awareness", name: "Anti-Smuggling Awareness" },
+    { key: "bank_account_declaration", name: "Bank Account Declaration Form" },
+  ],
+  sea_rpsl_contract: [
+    { key: "magellan_rpsl_contract", name: "Magellan – RPSL Contract" },
+  ],
+  company_policy: [
+    { key: "standard_terms_conditions_seafarers", name: "Standard Terms & Conditions for Seafarers" },
+  ],
+  covering_letters: [
+    { key: "immigration_letter_log", name: "Immigration Letter / LOG (for Joining Vessel)" },
+    { key: "letter_to_master", name: "Letter to Master (About Crew Joining Information to on-board Master)" },
+    { key: "business_visa_ksa_mumbai", name: "Business Visa Covering Letter – KSA Mumbai, India" },
+    { key: "business_visa_ksa_jakarta", name: "Business Visa Covering Letter - KSA Jakarta, Indonesia" },
+  ],
+  pre_departure: [],
+  sea_service_letters: [
+    { key: "sea_service_standard", name: "Sea Service Letter (Standard)" },
+    { key: "sea_service_gmdss_renewal", name: "Sea Service Letter for GMDSS Renewal" },
+    { key: "sea_service_coc_renewal", name: "Sea Service Letter for CoC Renewal" },
+    { key: "sea_service_watchkeeping_ii4_deck", name: "Sea Service Letter for issuance of Watch-Keeping II/4 (Deck)" },
+    { key: "sea_service_watchkeeping_iii4_engine", name: "Sea Service Letter for issuance of Watch-Keeping III/4 (Engine)" },
+    { key: "sea_service_cop_ii5_deck", name: "Sea Service Letter for issuance of CoP II/5 (Deck)" },
+    { key: "sea_service_cop_iii5_engine", name: "Sea Service Letter for issuance of CoP III/5 (Engine)" },
+  ],
+  full_cv_package: [
+    { key: "standard_cv_package", name: "Standard CV Package Combined File for Client Proposal" },
+    { key: "aramco_cv_package", name: "ARAMCO CV Package Combined File" },
+    { key: "adnoc_cv_package", name: "ADNOC CV Package Combined File" },
+  ],
+  document_checklists: [
+    { key: "mcm_prejoining_standard", name: "MCM Pre-Joining Document Checklist (Standard as per STCW / MLC)" },
+    { key: "mcm_prejoining_offshore", name: "MCM Pre Joining Document Checklist (Offshore Vessel)" },
+    { key: "mcm_prejoining_oil_tanker", name: "MCM Pre Joining Document Checklist (Oil Tanker Vessel)" },
+    { key: "mcm_prejoining_chemical_tanker", name: "MCM Pre Joining Document Checklist (Chemical Tanker Vessel)" },
+    { key: "mcm_prejoining_lpg", name: "MCM Pre Joining Document Checklist (LPG Carrier)" },
+    { key: "aramco_cv_package_checklist", name: "ARAMCO CV Package Checklist" },
+  ],
+  email_templates: [
+    { key: "welcome_new_seafarer", name: "Welcome Email to Seafarer (New/First Time to Magellan)" },
+    { key: "welcome_recommended_seafarer", name: "Welcome Email to Seafarer (Recommend by Principal/Owner/DPA/Tech Team)" },
+    { key: "joining_intimation_rejoining_indonesian", name: "Joining Intimation/Initial Email to Seafarers for Re-Joining vessels (Indonesian)" },
+    { key: "cv_package_submission_port_captain", name: "CV Package Submission/ Crew Change Plan to Port Captain" },
+    { key: "cv_package_submission_fnsa", name: "CV Package Submission to FNSA Team" },
+    { key: "cv_package_submission_principal", name: "CV Package Submission to Principal (Standard Format)" },
+    { key: "loi_request_sedres", name: "Letter of Invitation (LOI) Request to SEDRES" },
+    { key: "loi_request_inchcape", name: "Letter of Invitation (LOI) Request to INCHCAPE" },
+    { key: "crew_change_intimation_master", name: "Crew Change Intimation to On-board Master" },
+    { key: "crew_change_plan_port_captain", name: "Crew Change Intimation/Plan to Port Captain" },
+    { key: "crew_change_plan_port_agent", name: "Crew Change Intimation/Plan to Port Agent" },
+    { key: "ksa_visa_initial_indonesian", name: "KSA Visa Initial Email to Seafarer (Indonesian)" },
+    { key: "ksa_visa_initial_indian", name: "KSA Visa Initial Email to Seafarer (India)" },
+    { key: "pre_joining_forms_email", name: "Pre-Joining Forms Email to Seafarers" },
+    { key: "prior_joining_documents_confirmation_indian", name: "Prior Joining Vessel - Joining Documents Confirmation email to Seafarers (Indian)" },
+  ],
+};
+
+function resolveFormsCatalogItem(item) {
+  const status = item.status || "template";
+  return {
+    key: item.key,
+    name: item.name,
+    status,
+    canPreview: item.canPreview === true,
+    canDownload: item.canDownload === true,
+  };
+}
+
+function formsCatalogStatusLabel(item) {
+  if (item.status === "generated") return "Generated document available";
+  if (item.status === "unavailable") return "Not available yet";
+  return "Template available";
+}
+
 /** `licences.capacity` (COC grade) — Laravel `CandidateController::$capacities` */
 const LICENCE_CAPACITY_OPTIONS = [
   { value: "master", label: "Master" },
@@ -474,9 +574,10 @@ const CandidateDetails = () => {
     ? (location.state?.backLabel || "Back to Reports")
     : "Back to Candidates";
 
-  // State for main tabs (Basic, Documents, Services, Proposal, Medicals, Flag state, Pre Joining, Sign On, Sign Off, Communication)
+  // State for main tabs (Basic, Documents, Services, Proposal, Medicals, Flag state, Pre Joining, Sign On, Sign Off, Communication, Forms & Letters)
   const [activeMainTab, setActiveMainTab] = useState("basic_details");
   const [activeSeafarersTab, setActiveSeafarersTab] = useState("BasicDetail");
+  const [activeFormsTab, setActiveFormsTab] = useState("cv_company_owner");
 
   // Form data states
   const [candidateData, setCandidateData] = useState({});
@@ -2846,6 +2947,17 @@ const CandidateDetails = () => {
               Communication
             </button>
           </li>
+          <li className="nav-item">
+            <button
+              type="button"
+              className={`nav-link ${activeMainTab === "download_generate_forms" ? "active" : ""}`}
+              onClick={() => { setActiveMainTab("download_generate_forms"); setActiveFormsTab("cv_company_owner"); }}
+              role="tab"
+              aria-selected={activeMainTab === "download_generate_forms"}
+            >
+              Forms & Letters
+            </button>
+          </li>
         </ul>
       </div>
 
@@ -3922,6 +4034,10 @@ const CandidateDetails = () => {
             )}
           </div>
         </div>
+      )}
+
+      {activeMainTab === "download_generate_forms" && (
+        <FormsLettersPanel activeTab={activeFormsTab} onTabChange={setActiveFormsTab} />
       )}
 
       {aramcoPkgOpen && (
@@ -5940,6 +6056,103 @@ const AdditionalInfoSection = ({ additionalInfo, candidateData, onEdit }) => {
     </div>
   );
 };
+
+function FormsLettersRowActions({ canPreview, canDownload }) {
+  const previewOff = !canPreview;
+  const downloadOff = !canDownload;
+  return (
+    <div className="doc-actions-toolbar" role="toolbar" aria-label="Form actions">
+      <button
+        type="button"
+        className="doc-action-btn doc-action-preview"
+        disabled={previewOff}
+        title={previewOff ? "Preview not available yet" : "View"}
+        aria-label={previewOff ? "View — not available yet" : "View"}
+      >
+        <svg className="doc-action-icon-svg" viewBox="0 0 24 24" aria-hidden focusable="false">
+          <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+          <circle fill="none" stroke="currentColor" strokeWidth="2" cx="12" cy="12" r="3" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        className="doc-action-btn doc-action-download"
+        disabled={downloadOff}
+        title={downloadOff ? "Download not available yet" : "Download"}
+        aria-label={downloadOff ? "Download — not available yet" : "Download"}
+      >
+        <svg className="doc-action-icon-svg" viewBox="0 0 24 24" aria-hidden focusable="false">
+          <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+function FormsLettersPanel({ activeTab, onTabChange }) {
+  const tab = FORMS_TABS.find((t) => t.key === activeTab) || FORMS_TABS[0];
+  const items = (FORMS_CATALOG[tab.key] || []).map(resolveFormsCatalogItem);
+  return (
+    <div className="tab-content">
+      <div className="sub-tabs" role="tablist">
+        {FORMS_TABS.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            className={`sub-tab ${activeTab === t.key ? "active" : ""}`}
+            onClick={() => onTabChange(t.key)}
+            role="tab"
+            aria-selected={activeTab === t.key}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div className="document-section">
+        <div className="section-header">
+          <h3>{tab.label}</h3>
+        </div>
+        {tab.note ? (
+          <p className="forms-letters-note">{tab.note}</p>
+        ) : null}
+        {items.length > 0 ? (
+          <div className="table-responsive doc-table-wrap forms-letters-table">
+            <table className="doc-list-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Document / Form</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item, idx) => (
+                  <tr key={item.key}>
+                    <td>{idx + 1}</td>
+                    <td className="forms-letters-name">{item.name}</td>
+                    <td>
+                      <span className={`forms-letters-status forms-letters-status--${item.status}`}>
+                        {formsCatalogStatusLabel(item)}
+                      </span>
+                    </td>
+                    <td className="doc-list-actions-cell">
+                      <FormsLettersRowActions canPreview={item.canPreview} canDownload={item.canDownload} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="empty-state">
+            <p>No forms available</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 /** Compact icon toolbar for document tables — audit on hover, tooltips + aria-labels */
 function DocumentRowActions({
