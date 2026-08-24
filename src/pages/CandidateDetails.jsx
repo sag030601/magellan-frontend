@@ -388,11 +388,11 @@ const FORMS_CATALOG = {
   ],
   pre_joining_seafarers: [
     { key: "anti_bribery", name: "Anti Bribery Form", canPreview: true, canDownload: true, status: "generated" },
-    { key: "criminal_civil_declaration", name: "Criminal & Civil Declaration Form" },
+    { key: "criminal_civil_declaration", name: "Criminal & Civil Declaration Form", canPreview: true, canDownload: true, status: "generated" },
     { key: "drug_alcohol_declaration", name: "Drug & Alcohol Declaration Form" },
     { key: "marpol_declaration", name: "MARPOL - Read and Understood Declaration" },
     { key: "nda_policy", name: "Non-Disclosure Agreement (NDA) Policy" },
-    { key: "cyber_security_policy", name: "Cyber Security Policy" },
+    { key: "cyber_security_policy", name: "Cyber Security Policy", canPreview: true, canDownload: true, status: "generated" },
     { key: "anti_smuggling_awareness", name: "Anti-Smuggling Awareness" },
     { key: "bank_account_declaration", name: "Bank Account Declaration Form" },
   ],
