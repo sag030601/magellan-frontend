@@ -387,7 +387,7 @@ const FORMS_CATALOG = {
     { key: "aramco_cv", name: "Aramco (CV Form)" },
   ],
   pre_joining_seafarers: [
-    { key: "anti_bribery", name: "Anti Bribery Form" },
+    { key: "anti_bribery", name: "Anti Bribery Form", canPreview: true, canDownload: true, status: "generated" },
     { key: "criminal_civil_declaration", name: "Criminal & Civil Declaration Form" },
     { key: "drug_alcohol_declaration", name: "Drug & Alcohol Declaration Form" },
     { key: "marpol_declaration", name: "MARPOL - Read and Understood Declaration" },
@@ -429,7 +429,7 @@ const FORMS_CATALOG = {
     { key: "mcm_prejoining_oil_tanker", name: "MCM Pre Joining Document Checklist (Oil Tanker Vessel)" },
     { key: "mcm_prejoining_chemical_tanker", name: "MCM Pre Joining Document Checklist (Chemical Tanker Vessel)" },
     { key: "mcm_prejoining_lpg", name: "MCM Pre Joining Document Checklist (LPG Carrier)" },
-    { key: "aramco_cv_package_checklist", name: "ARAMCO CV Package Checklist" },
+    { key: "aramco_cv_package_checklist", name: "ARAMCO CV Package Checklist", canPreview: true, canDownload: true, status: "generated" },
   ],
   email_templates: [
     { key: "welcome_new_seafarer", name: "Welcome Email to Seafarer (New/First Time to Magellan)" },
@@ -749,6 +749,12 @@ const CandidateDetails = () => {
   const [genericModal, setGenericModal] = useState({ open: false, type: "", editingId: null, form: {}, saving: false });
   /** Proposal documents: pick from the row's uploads, then preview in-app. */
   const [proposalDocViewer, setProposalDocViewer] = useState({ open: false, row: null, docs: [], selected: null });
+  const [formsDocViewer, setFormsDocViewer] = useState({
+    open: false,
+    name: "",
+    fileName: "",
+    url: null,
+  });
 
   const openProposalDocViewer = (row) => {
     const docs = proposalDocumentsFor(row, id);
@@ -1076,6 +1082,90 @@ const CandidateDetails = () => {
       const blob = await r.blob();
       const a = document.createElement("a");
       const u = URL.createObjectURL(blob);
+      a.href = u;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(u);
+    } catch (e) {
+      alert(e?.message || "Download failed");
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const formsPdfFilenameFromHeader = (header, fallback) => {
+    if (!header) return fallback;
+    const star = /filename\*=UTF-8''([^;]+)/i.exec(header);
+    if (star) {
+      try {
+        return decodeURIComponent(star[1].trim());
+      } catch {
+        /* fall through */
+      }
+    }
+    const quoted = /filename="([^"]+)"/i.exec(header);
+    if (quoted) return quoted[1];
+    const plain = /filename=([^;]+)/i.exec(header);
+    return plain ? plain[1].trim() : fallback;
+  };
+
+  const fetchFormsPdfBlob = async (templateKey, { download } = {}) => {
+    const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+    const qs = download ? "?download=1" : "";
+    const r = await fetch(`${apiBase}/api/candidates/${id}/forms/${templateKey}${qs}`, {
+      headers: authHeaders(),
+    });
+    if (!r.ok) {
+      let msg = r.statusText;
+      try {
+        const j = await r.json();
+        if (j.error) msg = j.error;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(msg);
+    }
+    const blob = await r.blob();
+    const filename = formsPdfFilenameFromHeader(
+      r.headers.get("content-disposition"),
+      `${templateKey}.pdf`,
+    );
+    return { blob, filename };
+  };
+
+  const closeFormsDocViewer = () => {
+    setFormsDocViewer((prev) => {
+      if (prev.url) URL.revokeObjectURL(prev.url);
+      return { open: false, name: "", fileName: "", url: null };
+    });
+  };
+
+  const viewFormsDocument = async (item) => {
+    if (!item?.canPreview || exportBusy) return;
+    setExportBusy(true);
+    try {
+      const { blob, filename } = await fetchFormsPdfBlob(item.key);
+      const url = URL.createObjectURL(blob);
+      setFormsDocViewer((prev) => {
+        if (prev.url) URL.revokeObjectURL(prev.url);
+        return { open: true, name: item.name, fileName: filename, url };
+      });
+    } catch (e) {
+      alert(e?.message || "Preview failed");
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const downloadFormsDocument = async (item) => {
+    if (!item?.canDownload || exportBusy) return;
+    setExportBusy(true);
+    try {
+      const { blob, filename } = await fetchFormsPdfBlob(item.key, { download: true });
+      const u = URL.createObjectURL(blob);
+      const a = document.createElement("a");
       a.href = u;
       a.download = filename;
       document.body.appendChild(a);
@@ -4037,7 +4127,13 @@ const CandidateDetails = () => {
       )}
 
       {activeMainTab === "download_generate_forms" && (
-        <FormsLettersPanel activeTab={activeFormsTab} onTabChange={setActiveFormsTab} />
+        <FormsLettersPanel
+          activeTab={activeFormsTab}
+          onTabChange={setActiveFormsTab}
+          busy={exportBusy}
+          onView={viewFormsDocument}
+          onDownload={downloadFormsDocument}
+        />
       )}
 
       {aramcoPkgOpen && (
@@ -4240,6 +4336,74 @@ const CandidateDetails = () => {
                   Download
                 </button>
                 <button type="button" className="btn btn-sm btn-secondary" onClick={closeProposalDocViewer}>
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {formsDocViewer.open && (
+        <div className="modal-overlay" onClick={closeFormsDocViewer}>
+          <div className="modal-content modal-lg doc-viewer-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>{formsDocViewer.name || "Form"}</h3>
+              <button type="button" className="close-btn" onClick={closeFormsDocViewer} aria-label="Close">&times;</button>
+            </div>
+            <div className="doc-viewer-body">
+              <div className="doc-viewer-list" role="listbox" aria-label="Documents">
+                <div className="doc-viewer-list-title">1 document</div>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected="true"
+                  className="doc-viewer-item is-active"
+                >
+                  <i className="fas fa-file-pdf doc-viewer-item-icon" aria-hidden="true" />
+                  <span className="doc-viewer-item-text">
+                    <span className="doc-viewer-item-label">{formsDocViewer.name || "Form"}</span>
+                    <span className="doc-viewer-item-meta">PDF</span>
+                  </span>
+                </button>
+              </div>
+              <div className="doc-viewer-stage">
+                {formsDocViewer.url ? (
+                  <div className="doc-viewer-frame">
+                    <iframe
+                      src={`${formsDocViewer.url}#toolbar=1`}
+                      title={formsDocViewer.name || "Form preview"}
+                    />
+                  </div>
+                ) : (
+                  <div className="doc-viewer-empty">
+                    <p>Preview is not available</p>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="modal-footer doc-viewer-footer">
+              <span className="doc-viewer-filename" title={formsDocViewer.fileName || ""}>
+                {formsDocViewer.fileName || ""}
+              </span>
+              <div className="doc-viewer-footer-actions">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline-info"
+                  disabled={!formsDocViewer.url}
+                  onClick={() => {
+                    if (!formsDocViewer.url) return;
+                    const a = document.createElement("a");
+                    a.href = formsDocViewer.url;
+                    a.download = formsDocViewer.fileName || "form.pdf";
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                  }}
+                >
+                  Download
+                </button>
+                <button type="button" className="btn btn-sm btn-secondary" onClick={closeFormsDocViewer}>
                   Close
                 </button>
               </div>
@@ -6057,17 +6221,18 @@ const AdditionalInfoSection = ({ additionalInfo, candidateData, onEdit }) => {
   );
 };
 
-function FormsLettersRowActions({ canPreview, canDownload }) {
-  const previewOff = !canPreview;
-  const downloadOff = !canDownload;
+function FormsLettersRowActions({ canPreview, canDownload, busy, onView, onDownload }) {
+  const previewOff = !canPreview || busy;
+  const downloadOff = !canDownload || busy;
   return (
     <div className="doc-actions-toolbar" role="toolbar" aria-label="Form actions">
       <button
         type="button"
         className="doc-action-btn doc-action-preview"
         disabled={previewOff}
-        title={previewOff ? "Preview not available yet" : "View"}
-        aria-label={previewOff ? "View — not available yet" : "View"}
+        onClick={canPreview ? onView : undefined}
+        title={!canPreview ? "Preview not available yet" : busy ? "Preparing…" : "View"}
+        aria-label={!canPreview ? "View — not available yet" : "View"}
       >
         <svg className="doc-action-icon-svg" viewBox="0 0 24 24" aria-hidden focusable="false">
           <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
@@ -6078,8 +6243,9 @@ function FormsLettersRowActions({ canPreview, canDownload }) {
         type="button"
         className="doc-action-btn doc-action-download"
         disabled={downloadOff}
-        title={downloadOff ? "Download not available yet" : "Download"}
-        aria-label={downloadOff ? "Download — not available yet" : "Download"}
+        onClick={canDownload ? onDownload : undefined}
+        title={!canDownload ? "Download not available yet" : busy ? "Preparing…" : "Download"}
+        aria-label={!canDownload ? "Download — not available yet" : "Download"}
       >
         <svg className="doc-action-icon-svg" viewBox="0 0 24 24" aria-hidden focusable="false">
           <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
@@ -6089,7 +6255,7 @@ function FormsLettersRowActions({ canPreview, canDownload }) {
   );
 }
 
-function FormsLettersPanel({ activeTab, onTabChange }) {
+function FormsLettersPanel({ activeTab, onTabChange, busy, onView, onDownload }) {
   const tab = FORMS_TABS.find((t) => t.key === activeTab) || FORMS_TABS[0];
   const items = (FORMS_CATALOG[tab.key] || []).map(resolveFormsCatalogItem);
   return (
@@ -6137,7 +6303,13 @@ function FormsLettersPanel({ activeTab, onTabChange }) {
                       </span>
                     </td>
                     <td className="doc-list-actions-cell">
-                      <FormsLettersRowActions canPreview={item.canPreview} canDownload={item.canDownload} />
+                      <FormsLettersRowActions
+                        canPreview={item.canPreview}
+                        canDownload={item.canDownload}
+                        busy={busy}
+                        onView={() => onView?.(item)}
+                        onDownload={() => onDownload?.(item)}
+                      />
                     </td>
                   </tr>
                 ))}
