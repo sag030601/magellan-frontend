@@ -384,7 +384,7 @@ const FORMS_TABS = [
 const FORMS_CATALOG = {
   cv_company_owner: [
     { key: "magellan_mcm_cv", name: "Magellan (MCM CV Form)", canPreview: true, canDownload: true, status: "generated" },
-    { key: "aramco_cv", name: "Aramco (CV Form)", canPreview: true, canDownload: true, status: "generated" },
+    { key: "aramco_cv", name: "Aramco (CV Form)", canPreview: false, canDownload: false, status: "unavailable" },
   ],
   pre_joining_seafarers: [
     { key: "anti_bribery", name: "Anti Bribery Form", canPreview: true, canDownload: true, status: "generated" },
