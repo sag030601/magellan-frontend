@@ -4145,7 +4145,7 @@ const CandidateDetails = () => {
             </div>
             <div className="modal-body">
               <p className="aramco-pkg-note">
-                Pages 1–5 are always included: cover letter, Aramco checklist, Aramco CV, work experience, and previous approval letter.
+                Pages 1–4 are always included: cover letter, Aramco checklist, Aramco CV, and work experience.
                 Tick supporting documents below and set the order number. They are appended in that numbered order.
               </p>
               {aramcoPkgLoading ? (
