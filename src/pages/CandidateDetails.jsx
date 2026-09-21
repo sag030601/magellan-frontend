@@ -747,6 +747,7 @@ const CandidateDetails = () => {
   });
   // Generic modal state for Services, Proposal, Medicals, FlagState, PreJoining tabs
   const [genericModal, setGenericModal] = useState({ open: false, type: "", editingId: null, form: {}, saving: false });
+  const genericModalSavingRef = useRef(false);
   /** Proposal documents: pick from the row's uploads, then preview in-app. */
   const [proposalDocViewer, setProposalDocViewer] = useState({ open: false, row: null, docs: [], selected: null });
   const [formsDocViewer, setFormsDocViewer] = useState({
@@ -940,6 +941,8 @@ const CandidateDetails = () => {
   };
 
   const saveGenericModal = async () => {
+    if (genericModalSavingRef.current) return;
+    genericModalSavingRef.current = true;
     const { type, editingId, form } = genericModal;
     setGenericModal((prev) => ({ ...prev, saving: true }));
     const apiBase = import.meta.env.VITE_API_URL || "";
@@ -1045,6 +1048,8 @@ const CandidateDetails = () => {
     } catch (e) {
       alert(uploadErrorMessage(e));
       setGenericModal((prev) => ({ ...prev, saving: false }));
+    } finally {
+      genericModalSavingRef.current = false;
     }
   };
 
