@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { downloadReportCsv, downloadReportPdf } from "../lib/reportExport";
+import { useAuth } from "../context/AuthContext";
 import { fetchDocumentFilterOptions, fetchDocumentReport, queryKeys } from "../hooks/queries";
 import { readListFilterMemory, writeListFilterMemory } from "../lib/listFilterMemory";
 
@@ -10,6 +11,7 @@ const EMPTY_FILTERS = {
   candidate_id: "",
   rank: "",
   status: "",
+  employer_principal: "",
   vessel_name: "",
   document_category: "",
   document_name: "",
@@ -73,18 +75,27 @@ export default function DocumentReport() {
     writeListFilterMemory(FILTER_MEMORY_KEY, { filters });
   }, [filters]);
 
-  const { data: optsData, isLoading: loading, error: optsError } = useQuery({
-    queryKey: queryKeys.documentFilterOptions,
-    queryFn: fetchDocumentFilterOptions,
+  const { user } = useAuth();
+  const { data: optsData, isLoading: loading, isPlaceholderData, error: optsError } = useQuery({
+    queryKey: [...queryKeys.documentFilterOptions, user?.id ?? null, filters.employer_principal || null],
+    queryFn: () => fetchDocumentFilterOptions(filters.employer_principal),
+    placeholderData: (prev) => prev,
     staleTime: 5 * 60 * 1000,
   });
   const options = {
     ranks: optsData?.ranks || [],
     status: optsData?.status || [],
+    principals: optsData?.principals || [],
     vesselNames: optsData?.vesselNames || [],
     documentCategory: optsData?.documentCategory || [],
     documentType: optsData?.documentType || [],
   };
+
+  // A Principal-restricted user is locked to their assigned Principal (also enforced by the API).
+  const lockedPrincipalId = optsData?.locked_principal_id != null ? String(optsData.locked_principal_id) : "";
+  const principalValue = lockedPrincipalId || filters.employer_principal;
+  const vesselValue =
+    !optsData || isPlaceholderData || options.vesselNames.includes(filters.vessel_name) ? filters.vessel_name : "";
 
   const reportMutation = useMutation({
     mutationFn: fetchDocumentReport,
@@ -117,6 +128,7 @@ export default function DocumentReport() {
     setFilters((prev) => {
       const next = { ...prev, [name]: value };
       if (name === "document_category") next.document_name = "";
+      if (name === "employer_principal") next.vessel_name = "";
       return next;
     });
   };
@@ -125,7 +137,7 @@ export default function DocumentReport() {
     e.preventDefault();
     setFormError("");
     reportMutation.reset();
-    reportMutation.mutate(filters, {
+    reportMutation.mutate({ ...filters, employer_principal: principalValue, vessel_name: vesselValue }, {
       onError: (e2) => setFormError(e2.message || "Failed to generate report"),
     });
   };
@@ -160,7 +172,9 @@ export default function DocumentReport() {
   };
 
   const fieldStyle = { borderColor: "var(--border-primary)", background: "var(--bg-input)", color: "var(--text-primary)" };
-  const fieldCls = "h-9 rounded-lg border px-3 text-sm focus:outline-none focus:ring-2 focus:border-[var(--border-focus)] focus:ring-[color:var(--border-focus)]";
+  const fieldCls = "w-full h-9 rounded-lg border px-3 text-sm focus:outline-none focus:ring-2 focus:border-[var(--border-focus)] focus:ring-[color:var(--border-focus)]";
+  const labelCls = "block text-xs font-medium mb-1";
+  const labelStyle = { color: "var(--text-secondary)" };
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto px-4">
@@ -173,37 +187,82 @@ export default function DocumentReport() {
       <div className="rounded-xl overflow-hidden" style={{ background: "var(--bg-card)", boxShadow: "var(--shadow-sm)", border: "1px solid var(--border-primary)" }}>
         <div className="px-6 py-5">
           {error && <div className="mb-4 rounded-lg border px-4 py-3 text-sm" style={{ background: "var(--bg-secondary)", borderColor: "var(--danger)", color: "var(--danger)" }}>{error}</div>}
-          <form onSubmit={generate} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <input className={fieldCls} style={fieldStyle} name="candidate_id" value={filters.candidate_id} onChange={onFilterChange} placeholder="MCM crew ID" />
-            <select className={fieldCls} style={fieldStyle} name="rank" value={filters.rank} onChange={onFilterChange}>
-              <option value="">Select Rank</option>
-              {options.ranks.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-            </select>
-            <select className={fieldCls} style={fieldStyle} name="status" value={filters.status} onChange={onFilterChange}>
-              <option value="">Select Status</option>
-              {options.status.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name != null && String(s.name).trim() !== "" ? s.name : `Status ${s.id}`}
-                </option>
-              ))}
-            </select>
-            <select className={fieldCls} style={fieldStyle} name="vessel_name" value={filters.vessel_name} onChange={onFilterChange}>
-              <option value="">Select Vessel Name</option>
-              {options.vesselNames.map((v) => <option key={v} value={v}>{v}</option>)}
-            </select>
+          <form onSubmit={generate} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
+            <div>
+              <label htmlFor="dr-employer" className={labelCls} style={labelStyle}>Employer</label>
+              <select
+                id="dr-employer"
+                className={fieldCls}
+                style={fieldStyle}
+                name="employer_principal"
+                value={principalValue}
+                onChange={onFilterChange}
+                disabled={Boolean(lockedPrincipalId)}
+              >
+                {!lockedPrincipalId && <option value="">Select Employer</option>}
+                {options.principals.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="dr-vessel" className={labelCls} style={labelStyle}>Vessel Name</label>
+              <select id="dr-vessel" className={fieldCls} style={fieldStyle} name="vessel_name" value={vesselValue} onChange={onFilterChange}>
+                <option value="">Select Vessel</option>
+                {options.vesselNames.map((v) => <option key={v} value={v}>{v}</option>)}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="dr-status" className={labelCls} style={labelStyle}>Status</label>
+              <select id="dr-status" className={fieldCls} style={fieldStyle} name="status" value={filters.status} onChange={onFilterChange}>
+                <option value="">Select Status</option>
+                {options.status.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name != null && String(s.name).trim() !== "" ? s.name : `Status ${s.id}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="dr-category" className={labelCls} style={labelStyle}>
+                Document Category <span style={{ color: "var(--danger)" }}>*</span>
+              </label>
+              <select id="dr-category" className={fieldCls} style={fieldStyle} name="document_category" value={filters.document_category} onChange={onFilterChange} required>
+                <option value="">Select Category</option>
+                {options.documentCategory.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="dr-document" className={labelCls} style={labelStyle}>Document Name</label>
+              <select id="dr-document" className={fieldCls} style={fieldStyle} name="document_name" value={filters.document_name} onChange={onFilterChange}>
+                <option value="">Select Document</option>
+                {documentNameOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+            <fieldset className="sm:col-span-2 min-w-0">
+              <legend className={labelCls} style={labelStyle}>Date filters</legend>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="dr-from-date" className={labelCls} style={labelStyle}>From Date</label>
+                  <input id="dr-from-date" className={fieldCls} style={fieldStyle} type="date" name="from_date" value={filters.from_date} onChange={onFilterChange} />
+                </div>
+                <div>
+                  <label htmlFor="dr-to-date" className={labelCls} style={labelStyle}>To Date</label>
+                  <input id="dr-to-date" className={fieldCls} style={fieldStyle} type="date" name="to_date" value={filters.to_date} onChange={onFilterChange} />
+                </div>
+              </div>
+            </fieldset>
+            <div>
+              <label htmlFor="dr-member-id" className={labelCls} style={labelStyle}>Member ID</label>
+              <input id="dr-member-id" className={fieldCls} style={fieldStyle} name="candidate_id" value={filters.candidate_id} onChange={onFilterChange} placeholder="Enter Member ID" />
+            </div>
+            <div>
+              <label htmlFor="dr-rank" className={labelCls} style={labelStyle}>Rank</label>
+              <select id="dr-rank" className={fieldCls} style={fieldStyle} name="rank" value={filters.rank} onChange={onFilterChange}>
+                <option value="">Select Rank</option>
+                {options.ranks.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            </div>
 
-            <select className={fieldCls} style={fieldStyle} name="document_category" value={filters.document_category} onChange={onFilterChange} required>
-              <option value="">Select Document Category</option>
-              {options.documentCategory.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
-            <select className={fieldCls} style={fieldStyle} name="document_name" value={filters.document_name} onChange={onFilterChange}>
-              <option value="">Select Document Name</option>
-              {documentNameOptions.map((n) => <option key={n} value={n}>{n}</option>)}
-            </select>
-            <input className={fieldCls} style={fieldStyle} type="date" name="from_date" value={filters.from_date} onChange={onFilterChange} />
-            <input className={fieldCls} style={fieldStyle} type="date" name="to_date" value={filters.to_date} onChange={onFilterChange} />
-
-            <div className="lg:col-span-4 flex justify-end">
+            <div className="sm:col-span-2 lg:col-span-4 flex justify-end">
               <button type="submit" disabled={loading || loadingReport} className="btn btn-primary h-9 px-4 text-sm font-medium rounded-lg disabled:opacity-60">
                 {loadingReport ? "Generating..." : "Generate"}
               </button>

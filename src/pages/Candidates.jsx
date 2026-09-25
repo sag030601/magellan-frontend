@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
+import { useAuth } from "../context/AuthContext";
+import { isAssignedPrincipalUser } from "../lib/principalUser";
 import { fmtAuditUserName } from "../lib/auditDisplay";
 import { pickDocumentFile } from "../lib/uploadLimits";
 import { readListFilterMemory, writeListFilterMemory, clearListFilterMemory } from "../lib/listFilterMemory";
@@ -385,6 +387,8 @@ export default function Candidates() {
   const location = useLocation();
   const queryClient = useQueryClient();
   const isAddRoute = /\/add-candidate\/?$/.test(location.pathname);
+  const { user } = useAuth();
+  const readOnly = isAssignedPrincipalUser(user);
 
   const [addForm, setAddForm] = useState({ ...EMPTY_ADD_FORM });
   const [addSaving, setAddSaving] = useState(false);
@@ -995,9 +999,11 @@ export default function Candidates() {
                     <RemarksCell c={c} onView={handleView} />
                     <td className="candidates-col-action">
                       <div className="action-icons-toolbar candidates-action-cell">
-                        <button type="button" onClick={() => handleDelete(c.id)} className="action-icon-btn action-icon-delete" title="Delete">
+                        {!readOnly && (
+                          <button type="button" onClick={() => handleDelete(c.id)} className="action-icon-btn action-icon-delete" title="Delete">
                             <i className="fas fa-trash" />
                           </button>
+                        )}
                         </div>
                     </td>
                   </tr>

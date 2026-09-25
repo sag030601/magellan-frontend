@@ -1,11 +1,13 @@
 import { useState, useCallback } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { isAssignedPrincipalUser } from "../lib/principalUser";
 
 function Sidebar({ collapsed, onToggle }) {
   const location = useLocation();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const hidePrincipalModules = isAssignedPrincipalUser(user);
   const [candidatesOpen, setCandidatesOpen] = useState(true);
   const [reportsOpen, setReportsOpen] = useState(false);
   const [masterDataOpen, setMasterDataOpen] = useState(false);
@@ -90,9 +92,9 @@ function Sidebar({ collapsed, onToggle }) {
               }}
             >
               {navLink("/admin", "Candidates")}
-              {navLink("/admin/add-candidate", "Add Candidates")}
-              {navLink("/admin/owner", "Owner / Principal")}
-              {navLink("/admin/vessel", "Vessels")}
+              {!hidePrincipalModules && navLink("/admin/add-candidate", "Add Candidates")}
+              {!hidePrincipalModules && navLink("/admin/owner", "Owner / Principal")}
+              {!hidePrincipalModules && navLink("/admin/vessel", "Vessels")}
 
               <SectionToggle
                 open={reportsOpen}
@@ -111,17 +113,21 @@ function Sidebar({ collapsed, onToggle }) {
                 </div>
               )}
 
-              {navLink("#", "Wages")}
-              {navLink("#", "Forms")}
-              {navLink("#", "Contract")}
-              {navLink("#", "Birthday")}
-              {navLink("#", "Broadcast Ads")}
+              {!hidePrincipalModules && (
+                <>
+                  {navLink("#", "Wages")}
+                  {navLink("#", "Forms")}
+                  {navLink("#", "Contract")}
+                  {navLink("#", "Birthday")}
+                  {navLink("#", "Broadcast Ads")}
+                </>
+              )}
             </div>
           )}
         </div>
 
         <div className="mt-4">
-          {!collapsed && (
+          {!collapsed && !hidePrincipalModules && (
             <div className="px-1 mb-2">
               {navLink("/admin/activity-log", "Activity Log")}
             </div>

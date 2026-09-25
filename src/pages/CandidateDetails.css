@@ -693,6 +693,146 @@
   color: var(--text-secondary);
 }
 
+.proposal-upload-grid.signon-doc-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 8px;
+}
+
+@media (max-width: 640px) {
+  .proposal-upload-grid.signon-doc-grid { grid-template-columns: 1fr; }
+}
+
+.signon-doc-grid .proposal-upload-item {
+  gap: 4px;
+  padding: 5px 8px;
+}
+
+.signon-doc-grid .proposal-upload-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 22px;
+}
+
+.signon-doc-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.signon-doc-grid .signon-doc-add-btn {
+  display: inline-flex;
+  margin: 0;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--marine-300);
+  border-radius: 4px;
+  background: var(--bg-card);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.signon-doc-grid .signon-doc-add-btn:hover {
+  background: var(--marine-100);
+  color: var(--marine-700);
+}
+
+.signon-doc-grid .signon-doc-add-btn.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.signon-doc-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--marine-100);
+  color: var(--marine-700);
+  font-size: 10px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.signon-doc-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.signon-doc-file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2px 6px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  font-size: 12px;
+}
+
+.signon-doc-file-name {
+  flex: 1 1 100px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.signon-doc-file-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.signon-doc-file-actions .view-file-btn {
+  display: inline-flex;
+  margin: 0;
+  align-items: center;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+  background: var(--bg-card);
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.signon-doc-file-actions .view-file-btn:hover {
+  background: var(--marine-100);
+  border-color: var(--marine-300);
+  color: var(--marine-700);
+}
+
+.signon-doc-file-actions .view-file-btn.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.signon-doc-legacy {
+  grid-column: 1 / -1;
+}
+
+.signon-doc-legacy-type {
+  flex: 0 0 100%;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
 /* Single "View" entry point for a proposal row's documents */
 .doc-view-trigger {
   display: inline-flex;
@@ -1373,6 +1513,14 @@
 
 .modal-body.modal-form-row .form-group { margin-bottom: 0; }
 
+.signon-record-form { gap: 10px 16px; }
+.signon-record-form .form-actions {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 /* ── Table Responsive ────────────────────────────────────────────────────── */
 
 .table-responsive {
@@ -1424,6 +1572,7 @@
 .sign-on-records-table thead th,
 .sign-on-records-table tbody td { padding: 4px 6px; }
 
+.sign-on-records-table thead th:last-child { width: 96px; }
 .sign-on-records-table tbody td:last-child { white-space: normal; }
 .sign-on-records-table tbody td:last-child .d-flex { flex-wrap: wrap; gap: 6px; }
 .sign-on-records-table tbody td:last-child .btn { padding: 4px 8px; font-size: 11px; }

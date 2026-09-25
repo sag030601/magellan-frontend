@@ -8,6 +8,7 @@ import { fetchVessel, fetchVesselMetaOptions, queryKeys } from "../hooks/queries
 import "./VesselForm.css";
 
 const EMPTY = {
+  owner_id: "",
   employer: "",
   ship_name: "",
   imo_number: "",
@@ -47,6 +48,7 @@ function toDateInput(v) {
 
 function applyVesselToForm(v) {
   return {
+    owner_id: v.owner_id != null ? String(v.owner_id) : "",
     employer: v.employer ?? "",
     ship_name: v.ship_name ?? "",
     imo_number: v.imo_number ?? "",
@@ -121,10 +123,26 @@ export default function VesselForm() {
     setExistingDocs(vesselDocsFrom(vesselData));
   }, [vesselData]);
 
+  // Vessels saved before owner_id existed only carry the employer name; preselect the matching Principal.
+  const selectedOwnerId = useMemo(() => {
+    if (form.owner_id || !form.employer) return form.owner_id;
+    const name = form.employer.trim().toLowerCase();
+    const matches = opts.employers.filter((o) => String(o.principle_name || "").trim().toLowerCase() === name);
+    return matches.length === 1 ? String(matches[0].id) : "";
+  }, [form.owner_id, form.employer, opts.employers]);
+
+  const employerIsUnmatched = Boolean(form.employer) && !selectedOwnerId;
+
+  const onEmployerChange = (value) => {
+    if (value === "__current__") return;
+    const owner = opts.employers.find((o) => String(o.id) === value);
+    setForm((p) => ({ ...p, owner_id: value, employer: owner?.principle_name || "" }));
+  };
+
   const saveMutation = useMutation({
     mutationFn: async () => {
       const fd = new FormData();
-      Object.entries(form).forEach(([k, v]) => {
+      Object.entries({ ...form, owner_id: selectedOwnerId }).forEach(([k, v]) => {
         fd.append(k, v ?? "");
       });
       for (const k of FILE_KEYS) {
@@ -212,10 +230,17 @@ export default function VesselForm() {
           <div className="vessel-form-grid">
             <div className="vessel-field">
               <label>Employer</label>
-              <select className="form-control" value={form.employer} onChange={(e) => setField("employer", e.target.value)}>
+              <select
+                className="form-control"
+                value={employerIsUnmatched ? "__current__" : selectedOwnerId}
+                onChange={(e) => onEmployerChange(e.target.value)}
+              >
                 <option value="">Select Employer</option>
+                {employerIsUnmatched && (
+                  <option value="__current__">{form.employer} (current)</option>
+                )}
                 {opts.employers.map((o) => (
-                  <option key={o.id} value={o.principle_name || `Owner #${o.id}`}>{o.principle_name || `Owner #${o.id}`}</option>
+                  <option key={o.id} value={String(o.id)}>{o.principle_name || `Owner #${o.id}`}</option>
                 ))}
               </select>
             </div>

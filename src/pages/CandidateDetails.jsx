@@ -5,7 +5,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import axios from "../lib/axios";
 import { useAuth } from "../context/AuthContext";
 import RecordAuditPopover from "../components/RecordAuditPopover";
+import SignOnDocumentsGrid from "../components/SignOnDocumentsGrid";
 import { licenceDocumentUrl } from "../lib/documentUrl";
+import { emptySignOnPendingFiles, signOnCategoryLabel } from "../lib/signOnDocumentCategories";
+import { isAssignedPrincipalUser } from "../lib/principalUser";
 import {
   MAX_REQUEST_UPLOAD_MB,
   exceedsRequestLimit,
@@ -659,16 +662,18 @@ const CandidateDetails = () => {
     file: null,
     saving: false,
   });
-  const [signOnDocumentTypes, setSignOnDocumentTypes] = useState([]);
   const [showSignOnDocModal, setShowSignOnDocModal] = useState(false);
   const [signOnDocSignonId, setSignOnDocSignonId] = useState(null);
   const [signOnDocList, setSignOnDocList] = useState([]);
-  const [signOnDocUploading, setSignOnDocUploading] = useState(false);
+  const [signOnDocLoading, setSignOnDocLoading] = useState(false);
+  const [signOnDocError, setSignOnDocError] = useState("");
+  /** Category key (or "doc:<id>") currently uploading/replacing in the Documents modal. */
+  const [signOnDocBusyKey, setSignOnDocBusyKey] = useState(null);
 
-  // Sign-on document editing
-  const [signOnDocEditingId, setSignOnDocEditingId] = useState(null);
-  const [signOnDocEditDocumentId, setSignOnDocEditDocumentId] = useState("");
-  const [signOnDocFormKey, setSignOnDocFormKey] = useState(0);
+  /** Files staged per category in the Sign-on record Add/Edit modal, uploaded after the record saves. */
+  const [postSignOnRecordFiles, setPostSignOnRecordFiles] = useState(emptySignOnPendingFiles);
+  const [postSignOnRecordDocs, setPostSignOnRecordDocs] = useState([]);
+  const [postSignOnRecordDocsLoading, setPostSignOnRecordDocsLoading] = useState(false);
 
   // Sign-on record editing (post-sign-on documents rows: postsignon_docs)
   const [showPostSignOnRecordModal, setShowPostSignOnRecordModal] = useState(false);
@@ -746,7 +751,7 @@ const CandidateDetails = () => {
     other_documents_file: null,
   });
   // Generic modal state for Services, Proposal, Medicals, FlagState, PreJoining tabs
-  const [genericModal, setGenericModal] = useState({ open: false, type: "", editingId: null, form: {}, saving: false });
+  const [genericModal, setGenericModal] = useState({ open: false, type: "", editingId: null, form: {}, saving: false, viewOnly: false });
   const genericModalSavingRef = useRef(false);
   /** Proposal documents: pick from the row's uploads, then preview in-app. */
   const [proposalDocViewer, setProposalDocViewer] = useState({ open: false, row: null, docs: [], selected: null });
@@ -787,7 +792,7 @@ const CandidateDetails = () => {
     post_sign_off_documents: { page: 1, pageSize: 10 },
   });
 
-  const openGenericModal = async (type, row = null) => {
+  const openGenericModal = async (type, row = null, { viewOnly = false } = {}) => {
     const defaults = {
       services: { rank: "", vessel_name: "", flag: "", vessel_type: "", grt: "", dwt: "", bhp: "", engine_type: "", sign_on_date: "", sign_off_date: "", period: "", reason_of_sign_off: "", owner_company: "", file_path: "" },
       proposal: {
@@ -843,6 +848,10 @@ const CandidateDetails = () => {
     }
     if (type === "services") {
       form.period = calcInclusivePeriod(form.sign_on_date, form.sign_off_date);
+      if (row) {
+        form.rank_name = row.rank_name || "";
+        form.vessel_type_name = row.vessel_type_name || "";
+      }
     }
     if (type === "medicals") setMedicalDocFile(null);
     if (type === "flagstate") setFlagStateDocFile(null);
@@ -905,7 +914,7 @@ const CandidateDetails = () => {
         /* non-fatal */
       }
     }
-    setGenericModal({ open: true, type, editingId: row?.id ?? null, form, saving: false });
+    setGenericModal({ open: true, type, editingId: row?.id ?? null, form, saving: false, viewOnly: Boolean(viewOnly) });
   };
 
   const closeGenericModal = () => {
@@ -920,7 +929,7 @@ const CandidateDetails = () => {
       rejection_email_file: null,
       other_documents_file: null,
     });
-    setGenericModal({ open: false, type: "", editingId: null, form: {}, saving: false });
+    setGenericModal({ open: false, type: "", editingId: null, form: {}, saving: false, viewOnly: false });
   };
 
   const handleGenericFormChange = (key, val) => {
@@ -941,6 +950,7 @@ const CandidateDetails = () => {
   };
 
   const saveGenericModal = async () => {
+    if (genericModal.viewOnly) return;
     if (genericModalSavingRef.current) return;
     genericModalSavingRef.current = true;
     const { type, editingId, form } = genericModal;
@@ -1266,55 +1276,6 @@ const CandidateDetails = () => {
       a.remove();
       URL.revokeObjectURL(u);
       setAramcoPkgOpen(false);
-    } catch (e) {
-      alert(e?.message || "Download failed");
-    } finally {
-      setExportBusy(false);
-    }
-  };
-
-  /** Uploaded CV/resume (not the generated Check List CV PDF). */
-  const downloadCandidateResume = async () => {
-    const cvUrl = candidateData.cv;
-    if (!cvUrl) {
-      alert("No resume file uploaded for this candidate.");
-      setExportMenuOpen(false);
-      return;
-    }
-    setExportBusy(true);
-    setExportMenuOpen(false);
-    try {
-      const r = await fetch(cvUrl);
-      if (!r.ok) {
-        let msg = r.statusText;
-        try {
-          const j = await r.json();
-          if (j.error) msg = j.error;
-        } catch {
-          /* ignore */
-        }
-        throw new Error(msg || "Could not download resume");
-      }
-      const blob = await r.blob();
-      const leaf =
-        (candidateData.raw?.cv_upload_path && String(candidateData.raw.cv_upload_path).split("/").pop()) ||
-        cvUrl.split("/").pop() ||
-        "";
-      const extFromLeaf = leaf.includes(".") ? leaf.slice(leaf.lastIndexOf(".")).toLowerCase() : "";
-      const slug = [candidateData.surname, candidateData.given_name]
-        .filter((x) => x != null && String(x).trim())
-        .map((x) => String(x).trim().replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_-]/g, ""))
-        .filter(Boolean)
-        .join("_") || `crew_${id}`;
-      const filename = `resume_${slug}${extFromLeaf || ".pdf"}`;
-      const a = document.createElement("a");
-      const u = URL.createObjectURL(blob);
-      a.href = u;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(u);
     } catch (e) {
       alert(e?.message || "Download failed");
     } finally {
@@ -1750,7 +1711,6 @@ const CandidateDetails = () => {
       setPlanings(data.planings || []);
       setCountries(data.countries || []);
       setDocumentTypes(data.document_types || []);
-      setSignOnDocumentTypes(data.sign_on_document_types || []);
       const apiBaseNorm = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
       setVerificationDocTypes(data.verification_document_types || []);
       setEducationalDocuments(
@@ -1874,31 +1834,77 @@ const CandidateDetails = () => {
     }));
   };
 
-  // Fetch sign-on documents for modal (when signon_id is selected)
+  const readSignOnApiResult = async (res, fallback) => {
+    const isJson = (res.headers.get("content-type") || "").includes("application/json");
+    const data = isJson ? await res.json().catch(() => ({})) : {};
+    if (res.ok) return data;
+    if (res.status === 413) throw new Error(uploadErrorMessage({ response: { status: 413 } }, fallback));
+    throw new Error(data.error || fallback);
+  };
+
+  const loadSignOnDocuments = async (signonId) => {
+    const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+    const res = await fetch(
+      `${apiBase}/api/candidates/${id}/sign-on-documents?signon_id=${encodeURIComponent(signonId)}`,
+      { headers: authHeaders() },
+    );
+    const data = await readSignOnApiResult(res, "Failed to load documents");
+    return (data.documents || []).map((d) => ({
+      ...d,
+      view_url:
+        d.file_path && !String(d.file_path).startsWith("http")
+          ? `${apiBase}/uploads/${String(d.file_path).replace(/^public\/?/, "")}`
+          : d.file_path,
+    }));
+  };
+
+  const uploadSignOnDocument = async (signonId, categoryKey, file) => {
+    const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+    const fd = new FormData();
+    fd.append("signon_id", String(signonId));
+    fd.append("category", categoryKey);
+    fd.append("file_path", file);
+    const res = await fetch(`${apiBase}/api/candidates/${id}/sign-on-documents`, {
+      method: "POST",
+      body: fd,
+      headers: authHeaders(),
+    });
+    return readSignOnApiResult(res, "Failed to upload document");
+  };
+
+  const replaceSignOnDocumentFile = async (docId, file) => {
+    const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+    const fd = new FormData();
+    fd.append("file_path", file);
+    const res = await fetch(`${apiBase}/api/candidates/${id}/sign-on-documents/${docId}`, {
+      method: "PUT",
+      body: fd,
+      headers: authHeaders(),
+    });
+    return readSignOnApiResult(res, "Failed to replace document");
+  };
+
+  const deleteSignOnDocumentRequest = async (docId) => {
+    const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+    const res = await fetch(`${apiBase}/api/candidates/${id}/sign-on-documents/${docId}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
+    return readSignOnApiResult(res, "Failed to delete document");
+  };
+
   const fetchSignOnDocuments = async (signonId) => {
     if (!signonId || !id) return;
+    setSignOnDocLoading(true);
     try {
-      const apiBase = import.meta.env.VITE_API_URL || "";
-      const res = await fetch(
-        `${apiBase}/api/candidates/${id}/sign-on-documents?signon_id=${signonId}`,
-        { headers: authHeaders() },
-      );
-      const data = await res.json();
-      if (data.documents) {
-        const apiBaseUrl = apiBase.replace(/\/$/, "");
-        setSignOnDocList(
-          data.documents.map((d) => ({
-            ...d,
-            view_url:
-              d.file_path && !String(d.file_path).startsWith("http")
-                ? `${apiBaseUrl}/uploads/${d.file_path.replace(/^public\/?/, "")}`
-                : d.file_path,
-          })),
-        );
-      } else setSignOnDocList([]);
+      setSignOnDocList(await loadSignOnDocuments(signonId));
+      setSignOnDocError("");
     } catch (err) {
       console.error("Error fetching sign-on documents:", err);
       setSignOnDocList([]);
+      setSignOnDocError(err?.message || "Failed to load documents");
+    } finally {
+      setSignOnDocLoading(false);
     }
   };
 
@@ -1908,86 +1914,91 @@ const CandidateDetails = () => {
 
   const openSignOnDocModal = (signonId) => {
     setSignOnDocSignonId(signonId);
-    setSignOnDocEditingId(null);
-    setSignOnDocEditDocumentId("");
-    setSignOnDocFormKey((k) => k + 1);
+    setSignOnDocList([]);
+    setSignOnDocError("");
+    setSignOnDocBusyKey(null);
     setShowSignOnDocModal(true);
   };
 
-  const handleEditSignOnDocument = (doc) => {
-    setSignOnDocEditingId(doc?.id ?? null);
-    setSignOnDocEditDocumentId(doc?.document_id != null ? String(doc.document_id) : "");
-    // Reset file input/select UI for a clean edit experience
-    setSignOnDocFormKey((k) => k + 1);
+  const closeSignOnDocModal = () => {
+    setShowSignOnDocModal(false);
+    setSignOnDocSignonId(null);
+    setSignOnDocList([]);
+    setSignOnDocError("");
+    setSignOnDocBusyKey(null);
   };
 
-  const handleAddSignOnDocument = async (e) => {
-    e.preventDefault();
-    const form = e.target;
-    const documentId = form.document_id?.value;
-    const fileInput = form.file_path;
-    if (!signOnDocSignonId) {
-      alert("No sign-on record selected.");
-      return;
-    }
-    if (!documentId) {
-      alert("Please select document type.");
-      return;
-    }
-    setSignOnDocUploading(true);
+  const handleSignOnDocAddFile = async (categoryKey, file) => {
+    if (!signOnDocSignonId) return;
+    setSignOnDocBusyKey(categoryKey);
+    setSignOnDocError("");
     try {
-      const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
-      const fd = new FormData();
-      fd.append("signon_id", String(signOnDocSignonId));
-      fd.append("document_id", String(documentId));
-      if (fileInput?.files?.length) {
-        const file = rejectOversizedFile(fileInput.files[0], fileInput);
-        if (!file) {
-          setSignOnDocUploading(false);
-          return;
-        }
-        fd.append("file_path", file);
-      }
-
-      const endpoint = signOnDocEditingId
-        ? `${apiBase}/api/candidates/${id}/sign-on-documents/${signOnDocEditingId}`
-        : `${apiBase}/api/candidates/${id}/sign-on-documents`;
-
-      const method = signOnDocEditingId ? "PUT" : "POST";
-      const res = await fetch(endpoint, { method, body: fd, headers: authHeaders() });
-      const contentType = res.headers.get("content-type");
-      const isJson = contentType && contentType.includes("application/json");
-      const result = isJson ? await res.json() : { error: await res.text() || "Server error" };
-      if (res.ok) {
-        await fetchSignOnDocuments(signOnDocSignonId);
-        if (typeof form.reset === "function") form.reset();
-        setSignOnDocEditingId(null);
-        setSignOnDocEditDocumentId("");
-        setSignOnDocFormKey((k) => k + 1);
-      } else {
-        alert(result.error || "Failed to add document");
-      }
+      await uploadSignOnDocument(signOnDocSignonId, categoryKey, file);
+      await fetchSignOnDocuments(signOnDocSignonId);
     } catch (err) {
-      console.error("Add sign-on document error:", err);
-      alert(err?.message || "Failed to add document");
+      setSignOnDocError(`${signOnCategoryLabel(categoryKey)}: ${err?.message || "Upload failed"}`);
     } finally {
-      setSignOnDocUploading(false);
+      setSignOnDocBusyKey(null);
     }
   };
 
-  const handleDeleteSignOnDocument = async (docId) => {
+  const handleSignOnDocReplace = async (doc, file) => {
+    setSignOnDocBusyKey(`doc:${doc.id}`);
+    setSignOnDocError("");
+    try {
+      await replaceSignOnDocumentFile(doc.id, file);
+      await fetchSignOnDocuments(signOnDocSignonId);
+    } catch (err) {
+      setSignOnDocError(err?.message || "Failed to replace document");
+    } finally {
+      setSignOnDocBusyKey(null);
+    }
+  };
+
+  const handleDeleteSignOnDocument = async (doc) => {
+    if (!window.confirm("Delete this document?")) return;
+    setSignOnDocBusyKey(`doc:${doc.id}`);
+    setSignOnDocError("");
+    try {
+      await deleteSignOnDocumentRequest(doc.id);
+      await fetchSignOnDocuments(signOnDocSignonId);
+    } catch (err) {
+      setSignOnDocError(err?.message || "Failed to delete document");
+    } finally {
+      setSignOnDocBusyKey(null);
+    }
+  };
+
+  const loadPostSignOnRecordDocs = async (signonId) => {
+    setPostSignOnRecordDocsLoading(true);
+    try {
+      setPostSignOnRecordDocs(await loadSignOnDocuments(signonId));
+    } catch (err) {
+      console.error("Error fetching sign-on documents:", err);
+      setPostSignOnRecordDocs([]);
+    } finally {
+      setPostSignOnRecordDocsLoading(false);
+    }
+  };
+
+  const stagePostSignOnRecordFile = (categoryKey, file) => {
+    setPostSignOnRecordFiles((prev) => ({ ...prev, [categoryKey]: [...(prev[categoryKey] || []), file] }));
+  };
+
+  const unstagePostSignOnRecordFile = (categoryKey, index) => {
+    setPostSignOnRecordFiles((prev) => ({
+      ...prev,
+      [categoryKey]: (prev[categoryKey] || []).filter((_, i) => i !== index),
+    }));
+  };
+
+  const deletePostSignOnRecordDoc = async (doc) => {
     if (!window.confirm("Delete this document?")) return;
     try {
-      const apiBase = import.meta.env.VITE_API_URL || "";
-      const res = await fetch(
-        `${apiBase}/api/candidates/${id}/sign-on-documents/${docId}`,
-        { method: "DELETE", headers: authHeaders() },
-      );
-      if (res.ok) await fetchSignOnDocuments(signOnDocSignonId);
-      else alert("Failed to delete");
+      await deleteSignOnDocumentRequest(doc.id);
+      if (postSignOnRecordEditingId != null) await loadPostSignOnRecordDocs(postSignOnRecordEditingId);
     } catch (err) {
-      console.error(err);
-      alert("Failed to delete document");
+      alert(err?.message || "Failed to delete document");
     }
   };
 
@@ -2055,6 +2066,9 @@ const CandidateDetails = () => {
   }, [postSignOnDocs]);
 
   const isAdmin = user?.role === "admin";
+  // A user assigned to a Principal has view-only access to candidate details (also enforced by the API).
+  const readOnly = isAssignedPrincipalUser(user);
+  const editable = (handler) => (readOnly ? undefined : handler);
   const canAddSignOffRecord = signOffAddEligible || isAdmin;
 
   const filteredRemarks = useMemo(() => {
@@ -2182,7 +2196,16 @@ const CandidateDetails = () => {
       sign_off_due: "",
       remark: "",
     });
+    setPostSignOnRecordFiles(emptySignOnPendingFiles());
+    setPostSignOnRecordDocs([]);
     setShowPostSignOnRecordModal(true);
+  };
+
+  const closePostSignOnRecordModal = () => {
+    setShowPostSignOnRecordModal(false);
+    setPostSignOnRecordEditingId(null);
+    setPostSignOnRecordFiles(emptySignOnPendingFiles());
+    setPostSignOnRecordDocs([]);
   };
 
   const openEditPostSignOnRecordModal = (row) => {
@@ -2205,6 +2228,9 @@ const CandidateDetails = () => {
       sign_off_due: toDateInputValue(row?.sign_off_due),
       remark: row?.remark ?? "",
     });
+    setPostSignOnRecordFiles(emptySignOnPendingFiles());
+    setPostSignOnRecordDocs([]);
+    if (row?.id != null) loadPostSignOnRecordDocs(row.id);
     setShowPostSignOnRecordModal(true);
   };
 
@@ -2251,9 +2277,26 @@ const CandidateDetails = () => {
 
       const saved = await res.json().catch(() => ({}));
       applyStatusSyncFromResponse(saved);
-      setShowPostSignOnRecordModal(false);
-      setPostSignOnRecordEditingId(null);
+
+      const signonId = isEdit ? postSignOnRecordEditingId : saved.id;
+      const failures = [];
+      if (signonId != null) {
+        for (const [categoryKey, files] of Object.entries(postSignOnRecordFiles)) {
+          for (const file of files || []) {
+            try {
+              await uploadSignOnDocument(signonId, categoryKey, file);
+            } catch (uploadErr) {
+              failures.push(`${signOnCategoryLabel(categoryKey)} – ${file.name}: ${uploadErr?.message || "Upload failed"}`);
+            }
+          }
+        }
+      }
+
+      closePostSignOnRecordModal();
       await fetchCandidateData();
+      if (failures.length) {
+        alert(`Sign-on record saved, but some documents were not uploaded:\n\n${failures.join("\n")}\n\nYou can add them from the Documents action.`);
+      }
     } catch (err) {
       alert(err?.message || "Failed to save sign-on record");
     } finally {
@@ -2261,12 +2304,13 @@ const CandidateDetails = () => {
     }
   };
 
+  /** @returns {Promise<boolean>} true when the record was deleted */
   const handleDeletePostSignOnRecord = async (rowId) => {
     if (!isAdmin) {
       alert("Only admins can delete sign-on records.");
-      return;
+      return false;
     }
-    if (!window.confirm("Delete this sign-on record?")) return;
+    if (!window.confirm("Delete this sign-on record?")) return false;
     try {
       const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
       const res = await fetch(
@@ -2280,8 +2324,32 @@ const CandidateDetails = () => {
       const deleted = await res.json().catch(() => ({}));
       applyStatusSyncFromResponse(deleted);
       await fetchCandidateData();
+      return true;
     } catch (err) {
       alert(err?.message || "Failed to delete sign-on record");
+      return false;
+    }
+  };
+
+  const signOnDocModalRecord =
+    signOnDocSignonId != null ? postSignOnDocs.find((r) => String(r.id) === String(signOnDocSignonId)) : null;
+
+  const editSignOnRecordFromDocModal = () => {
+    if (!signOnDocModalRecord) return;
+    closeSignOnDocModal();
+    openEditPostSignOnRecordModal(signOnDocModalRecord);
+  };
+
+  const deleteSignOnRecordFromModal = async (rowId, close) => {
+    if (await handleDeletePostSignOnRecord(rowId)) close();
+  };
+
+  const replacePostSignOnRecordDoc = async (doc, file) => {
+    try {
+      await replaceSignOnDocumentFile(doc.id, file);
+      if (postSignOnRecordEditingId != null) await loadPostSignOnRecordDocs(postSignOnRecordEditingId);
+    } catch (err) {
+      alert(err?.message || "Failed to replace document");
     }
   };
 
@@ -2911,17 +2979,6 @@ const CandidateDetails = () => {
                       Aramco CV Package
                     </button>
                   </li>
-                  <li>
-                    <button
-                      type="button"
-                      className="export-dropdown-item"
-                      disabled={!candidateData.cv}
-                      title={candidateData.cv ? "Uploaded CV / resume file" : "No resume file on file"}
-                      onClick={() => downloadCandidateResume()}
-                    >
-                      Download resume
-                    </button>
-                  </li>
                 </ul>,
                 document.body,
               )}
@@ -3123,7 +3180,7 @@ const CandidateDetails = () => {
               formData={formData}
               candidateData={candidateData}
               countries={countries}
-              onAddEdit={() => setShowAddressModal(true)}
+              onAddEdit={editable(() => setShowAddressModal(true))}
             />
           )}
 
@@ -3132,14 +3189,14 @@ const CandidateDetails = () => {
               nokDocs={nokDocs}
               candidateData={candidateData}
               formData={formData}
-              onAddNew={() => {
+              onAddNew={editable(() => {
                 setNokEditing(null);
                 setShowNokModal(true);
-              }}
-              onEdit={(nok) => {
+              })}
+              onEdit={editable((nok) => {
                 setNokEditing(nok);
                 setShowNokModal(true);
-              }}
+              })}
               fetchCandidateData={fetchCandidateData}
             />
           )}
@@ -3148,7 +3205,7 @@ const CandidateDetails = () => {
             <AdditionalInfoSection
               additionalInfo={additionalInfo}
               candidateData={candidateData}
-              onEdit={() => {
+              onEdit={editable(() => {
                 setAdditionalInfo({
                   height: candidateData?.height || "",
                   weight: candidateData?.weight || "",
@@ -3160,7 +3217,7 @@ const CandidateDetails = () => {
                   shoe_size: candidateData?.shoe_size || "",
                 });
                 setShowAdditionalModal(true);
-              }}
+              })}
             />
           )}
         </div>
@@ -3258,9 +3315,9 @@ const CandidateDetails = () => {
           {activeSeafarersTab === "Passport" && (
             <PassportSection
               seafarersDocs={seafarersDocs}
-              onAddNew={() => openSeafarersModal({ fixedType: "Passport" })}
-              onDelete={(docId) => handleDeleteDocument(docId, "seafarers")}
-              onEdit={(doc) => openSeafarersModal({ editingDoc: doc, fixedType: "Passport" })}
+              onAddNew={editable(() => openSeafarersModal({ fixedType: "Passport" }))}
+              onDelete={editable((docId) => handleDeleteDocument(docId, "seafarers"))}
+              onEdit={editable((doc) => openSeafarersModal({ editingDoc: doc, fixedType: "Passport" }))}
             />
           )}
 
@@ -3268,9 +3325,9 @@ const CandidateDetails = () => {
           {activeSeafarersTab === "Cdc" && (
             <CdcSection
               seafarersDocs={seafarersDocs}
-              onAddNew={() => openSeafarersModal({ fixedType: "Seaman Book" })}
-              onDelete={(docId) => handleDeleteDocument(docId, "seafarers")}
-              onEdit={(doc) => openSeafarersModal({ editingDoc: doc, fixedType: "Seaman Book" })}
+              onAddNew={editable(() => openSeafarersModal({ fixedType: "Seaman Book" }))}
+              onDelete={editable((docId) => handleDeleteDocument(docId, "seafarers"))}
+              onEdit={editable((doc) => openSeafarersModal({ editingDoc: doc, fixedType: "Seaman Book" }))}
             />
           )}
 
@@ -3278,9 +3335,9 @@ const CandidateDetails = () => {
           {activeSeafarersTab === "Licence" && (
             <LicenseSection
               licenses={licenses}
-              onAddNew={() => setLicenseModal({ open: true, editingDoc: null })}
-              onDelete={(docId) => handleDeleteDocument(docId, "license")}
-              onEdit={(doc) => setLicenseModal({ open: true, editingDoc: doc })}
+              onAddNew={editable(() => setLicenseModal({ open: true, editingDoc: null }))}
+              onDelete={editable((docId) => handleDeleteDocument(docId, "license"))}
+              onEdit={editable((doc) => setLicenseModal({ open: true, editingDoc: doc }))}
             />
           )}
 
@@ -3288,9 +3345,9 @@ const CandidateDetails = () => {
           {activeSeafarersTab === "Documents" && (
             <StcwDocumentsSection
               seafarersDocs={seafarersDocs}
-              onAddNew={() => openSeafarersModal({ pickType: true })}
-              onDelete={(docId) => handleDeleteDocument(docId, "seafarers")}
-              onEdit={(doc) => openSeafarersModal({ editingDoc: doc, pickType: true })}
+              onAddNew={editable(() => openSeafarersModal({ pickType: true }))}
+              onDelete={editable((docId) => handleDeleteDocument(docId, "seafarers"))}
+              onEdit={editable((doc) => openSeafarersModal({ editingDoc: doc, pickType: true }))}
             />
           )}
 
@@ -3299,9 +3356,9 @@ const CandidateDetails = () => {
             <VisaSection
               candidateId={id}
               seafarersDocs={seafarersDocs}
-              onAddNew={() => openSeafarersModal({ fixedType: "VISA Copy" })}
-              onDelete={(docId) => handleDeleteDocument(docId, "seafarers")}
-              onEdit={(doc) => openSeafarersModal({ editingDoc: doc, fixedType: "VISA Copy" })}
+              onAddNew={editable(() => openSeafarersModal({ fixedType: "VISA Copy" }))}
+              onDelete={editable((docId) => handleDeleteDocument(docId, "seafarers"))}
+              onEdit={editable((doc) => openSeafarersModal({ editingDoc: doc, fixedType: "VISA Copy" }))}
             />
           )}
 
@@ -3309,9 +3366,9 @@ const CandidateDetails = () => {
           {activeSeafarersTab === "edDocs" && (
             <EducationalDocuments
               edDocs={educationalDocuments}
-              onAddNew={() => setEducationModal({ open: true, editingDoc: null })}
-              onDelete={(docId) => handleDeleteDocument(docId, "education")}
-              onEdit={(doc) => setEducationModal({ open: true, editingDoc: doc })}
+              onAddNew={editable(() => setEducationModal({ open: true, editingDoc: null }))}
+              onDelete={editable((docId) => handleDeleteDocument(docId, "education"))}
+              onEdit={editable((doc) => setEducationModal({ open: true, editingDoc: doc }))}
             />
           )}
 
@@ -3319,9 +3376,9 @@ const CandidateDetails = () => {
           {activeSeafarersTab === "verificationDocs" && (
             <VerificationDocuments
               edDocs={verificationDocuments}
-              onAddNew={() => setVerificationModal({ open: true, editingDoc: null })}
-              onDelete={(docId) => handleDeleteDocument(docId, "verification")}
-              onEdit={(doc) => setVerificationModal({ open: true, editingDoc: doc })}
+              onAddNew={editable(() => setVerificationModal({ open: true, editingDoc: null }))}
+              onDelete={editable((docId) => handleDeleteDocument(docId, "verification"))}
+              onEdit={editable((doc) => setVerificationModal({ open: true, editingDoc: doc }))}
             />
           )}
 
@@ -3329,9 +3386,9 @@ const CandidateDetails = () => {
           {activeSeafarersTab === "Dce" && (
             <DceDocumentsSection
               dceDocs={dceDocs}
-              onAddNew={() => setAuxCertModal({ open: true, variant: "dce", editingDoc: null })}
-              onDelete={(docId) => handleDeleteDocument(docId, "dce")}
-              onEdit={(doc) => setAuxCertModal({ open: true, variant: "dce", editingDoc: doc })}
+              onAddNew={editable(() => setAuxCertModal({ open: true, variant: "dce", editingDoc: null }))}
+              onDelete={editable((docId) => handleDeleteDocument(docId, "dce"))}
+              onEdit={editable((doc) => setAuxCertModal({ open: true, variant: "dce", editingDoc: doc }))}
             />
           )}
 
@@ -3339,9 +3396,9 @@ const CandidateDetails = () => {
           {activeSeafarersTab === "ValueAddedCourse" && (
             <ValueAddedDocumentsSection
               valueCourses={valueCourses}
-              onAddNew={() => setAuxCertModal({ open: true, variant: "value", editingDoc: null })}
-              onDelete={(docId) => handleDeleteDocument(docId, "value_course")}
-              onEdit={(doc) => setAuxCertModal({ open: true, variant: "value", editingDoc: doc })}
+              onAddNew={editable(() => setAuxCertModal({ open: true, variant: "value", editingDoc: null }))}
+              onDelete={editable((docId) => handleDeleteDocument(docId, "value_course"))}
+              onEdit={editable((doc) => setAuxCertModal({ open: true, variant: "value", editingDoc: doc }))}
             />
           )}
         </div>
@@ -3353,9 +3410,11 @@ const CandidateDetails = () => {
           <div className="tab-content-section">
             <div className="section-header-row">
               <h6 className="tab-section-title">External Service</h6>
-              <button type="button" className="btn btn-sm btn-info" onClick={() => openGenericModal("services")}>
-                Add New
-              </button>
+              {!readOnly && (
+                <button type="button" className="btn btn-sm btn-info" onClick={() => openGenericModal("services")}>
+                  Add New
+                </button>
+              )}
             </div>
             {seaServicesPage.total > 0 ? (
               <>
@@ -3415,8 +3474,14 @@ const CandidateDetails = () => {
                         </td>
                         <td className="action-cell-with-audit">
                           <ActionToolbar record={row}>
-                            <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("services", row)}><i className="fas fa-pen" /></button>
-                            <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleGenericDelete("services", row.id)}><i className="fas fa-trash" /></button>
+                            {readOnly ? (
+                              <button type="button" className="action-icon-btn action-icon-edit" title="View" onClick={() => openGenericModal("services", row, { viewOnly: true })}><i className="fas fa-eye" /></button>
+                            ) : (
+                              <>
+                                <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("services", row)}><i className="fas fa-pen" /></button>
+                                <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleGenericDelete("services", row.id)}><i className="fas fa-trash" /></button>
+                              </>
+                            )}
                           </ActionToolbar>
                         </td>
                       </tr>
@@ -3449,9 +3514,11 @@ const CandidateDetails = () => {
           <div className="tab-content-section">
             <div className="section-header-row">
               <h6 className="tab-section-title">Proposal</h6>
-              <button type="button" className="btn btn-sm btn-info" onClick={() => openGenericModal("proposal")}>
-                Add New
-              </button>
+              {!readOnly && (
+                <button type="button" className="btn btn-sm btn-info" onClick={() => openGenericModal("proposal")}>
+                  Add New
+                </button>
+              )}
             </div>
             {planingsPage.total > 0 ? (
               <>
@@ -3504,8 +3571,12 @@ const CandidateDetails = () => {
                         </td>
                         <td className="action-cell-with-audit">
                           <ActionToolbar record={row}>
-                            <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("proposal", row)}><i className="fas fa-pen" /></button>
-                            <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleGenericDelete("proposal", row.id)}><i className="fas fa-trash" /></button>
+                            {!readOnly && (
+                              <>
+                                <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("proposal", row)}><i className="fas fa-pen" /></button>
+                                <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleGenericDelete("proposal", row.id)}><i className="fas fa-trash" /></button>
+                              </>
+                            )}
                           </ActionToolbar>
                         </td>
                       </tr>
@@ -3539,9 +3610,11 @@ const CandidateDetails = () => {
           <div className="tab-content-section">
             <div className="section-header-row">
               <h6 className="tab-section-title">Pre-joining medicals</h6>
-              <button type="button" className="btn btn-sm btn-info" onClick={() => openGenericModal("medicals")}>
-                Add New
-              </button>
+              {!readOnly && (
+                <button type="button" className="btn btn-sm btn-info" onClick={() => openGenericModal("medicals")}>
+                  Add New
+                </button>
+              )}
             </div>
             {medicalsPage.total > 0 ? (
               <>
@@ -3585,8 +3658,12 @@ const CandidateDetails = () => {
                         </td>
                         <td className="action-cell-with-audit">
                           <ActionToolbar record={row}>
-                            <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("medicals", row)}><i className="fas fa-pen" /></button>
-                            <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleGenericDelete("medicals", row.id)}><i className="fas fa-trash" /></button>
+                            {!readOnly && (
+                              <>
+                                <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("medicals", row)}><i className="fas fa-pen" /></button>
+                                <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleGenericDelete("medicals", row.id)}><i className="fas fa-trash" /></button>
+                              </>
+                            )}
                           </ActionToolbar>
                         </td>
                       </tr>
@@ -3619,9 +3696,11 @@ const CandidateDetails = () => {
           <div className="tab-content-section">
             <div className="section-header-row">
               <h6 className="tab-section-title">Flag state crew documents</h6>
-              <button type="button" className="btn btn-sm btn-info" onClick={() => openGenericModal("flagstate")}>
-                Add New
-              </button>
+              {!readOnly && (
+                <button type="button" className="btn btn-sm btn-info" onClick={() => openGenericModal("flagstate")}>
+                  Add New
+                </button>
+              )}
             </div>
             {flagStatePage.total > 0 ? (
               <>
@@ -3669,8 +3748,12 @@ const CandidateDetails = () => {
                         </td>
                         <td className="action-cell-with-audit">
                           <ActionToolbar record={row}>
-                            <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("flagstate", row)}><i className="fas fa-pen" /></button>
-                            <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleGenericDelete("flagstate", row.id)}><i className="fas fa-trash" /></button>
+                            {!readOnly && (
+                              <>
+                                <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("flagstate", row)}><i className="fas fa-pen" /></button>
+                                <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleGenericDelete("flagstate", row.id)}><i className="fas fa-trash" /></button>
+                              </>
+                            )}
                           </ActionToolbar>
                         </td>
                       </tr>
@@ -3702,9 +3785,11 @@ const CandidateDetails = () => {
           <div className="tab-content-section">
             <div className="section-header-row">
               <h6 className="tab-section-title">Pre-joining travel documents</h6>
-              <button type="button" className="btn btn-sm btn-info" onClick={() => openGenericModal("prejoining")}>
-                Add New
-              </button>
+              {!readOnly && (
+                <button type="button" className="btn btn-sm btn-info" onClick={() => openGenericModal("prejoining")}>
+                  Add New
+                </button>
+              )}
             </div>
             {travelDocsPage.total > 0 ? (
               <>
@@ -3745,8 +3830,12 @@ const CandidateDetails = () => {
                         </td>
                         <td className="action-cell-with-audit">
                           <ActionToolbar record={row}>
-                            <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("prejoining", row)}><i className="fas fa-pen" /></button>
-                            <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleGenericDelete("prejoining", row.id)}><i className="fas fa-trash" /></button>
+                            {!readOnly && (
+                              <>
+                                <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openGenericModal("prejoining", row)}><i className="fas fa-pen" /></button>
+                                <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleGenericDelete("prejoining", row.id)}><i className="fas fa-trash" /></button>
+                              </>
+                            )}
                           </ActionToolbar>
                         </td>
                       </tr>
@@ -3779,14 +3868,16 @@ const CandidateDetails = () => {
           <div className="tab-content-section">
             <div className="section-header-row">
               <h6 className="tab-section-title">Sign on documents</h6>
-              <button
-                type="button"
-                className="btn btn-sm btn-info"
-                onClick={openAddPostSignOnRecordModal}
-                title="Add New sign-on record"
-              >
-                Add New
-              </button>
+              {!readOnly && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-info"
+                  onClick={openAddPostSignOnRecordModal}
+                  title="Add New sign-on record"
+                >
+                  Add New
+                </button>
+              )}
             </div>
             {signOnPage.total > 0 ? (
               <>
@@ -3880,21 +3971,23 @@ const CandidateDetails = () => {
           <div className="tab-content-section">
             <div className="section-header-row">
               <h6 className="tab-section-title">Sign off documents</h6>
-              <button
-                type="button"
-                className="btn btn-sm btn-info"
-                onClick={openAddPostSignOffRecordModal}
-                disabled={!canAddSignOffRecord}
-                title={
-                  canAddSignOffRecord
-                    ? "Add New sign-off record"
-                    : "Available after the due sign-off date on a Sign On record is today or earlier."
-                }
-              >
-                Add New
-              </button>
+              {!readOnly && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-info"
+                  onClick={openAddPostSignOffRecordModal}
+                  disabled={!canAddSignOffRecord}
+                  title={
+                    canAddSignOffRecord
+                      ? "Add New sign-off record"
+                      : "Available after the due sign-off date on a Sign On record is today or earlier."
+                  }
+                >
+                  Add New
+                </button>
+              )}
             </div>
-            {!signOffAddEligible && !isAdmin && (
+            {!signOffAddEligible && !isAdmin && !readOnly && (
               <p className="small text-muted mb-2">
                 Add sign-off is available once a Sign On record has a due sign-off date on or before today.
               </p>
@@ -4013,9 +4106,11 @@ const CandidateDetails = () => {
                   onChange={(e) => setRemarksSearch(e.target.value)}
                   aria-label="Search communication notes"
                 />
-                <button type="button" className="btn btn-sm btn-info" onClick={() => openRemarkModal()}>
-                  Add Remark
-                </button>
+                {!readOnly && (
+                  <button type="button" className="btn btn-sm btn-info" onClick={() => openRemarkModal()}>
+                    Add Remark
+                  </button>
+                )}
               </div>
             </div>
 
@@ -4029,10 +4124,13 @@ const CandidateDetails = () => {
                 className="form-control remarks-followup-input"
                 value={formatDateForInput(formData.followup_date)}
                 onChange={(e) => setFormData((prev) => ({ ...prev, followup_date: e.target.value }))}
+                disabled={readOnly}
               />
-              <button type="button" className="btn btn-sm btn-primary" onClick={handleSaveFollowupDate}>
-                Save
-              </button>
+              {!readOnly && (
+                <button type="button" className="btn btn-sm btn-primary" onClick={handleSaveFollowupDate}>
+                  Save
+                </button>
+              )}
             </div>
 
             {filteredRemarks.length > 0 ? (
@@ -4422,7 +4520,7 @@ const CandidateDetails = () => {
         <div className="modal-overlay" onClick={closeGenericModal}>
           <div className="modal-content modal-lg" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3>{genericModal.editingId ? "Edit" : "Add"} {
+              <h3>{genericModal.viewOnly ? "View" : genericModal.editingId ? "Edit" : "Add"} {
                 { services: "External Service", proposal: "Proposal", medicals: "Pre-joining Medical", flagstate: "Flag State Document", prejoining: "Pre-joining Travel Document" }[genericModal.type]
               }</h3>
               <button className="close-btn" onClick={closeGenericModal}>&times;</button>
@@ -4434,9 +4532,16 @@ const CandidateDetails = () => {
                   <select
                     className="form-control"
                     value={genericModal.form.rank}
+                    disabled={genericModal.viewOnly}
                     onChange={(e) => handleGenericFormChange("rank", e.target.value)}
                   >
                     <option value="">Select rank</option>
+                    {genericModal.form.rank &&
+                      !(masterSearchOpts.ranks || []).some((r) => String(r.id) === String(genericModal.form.rank)) && (
+                        <option value={genericModal.form.rank}>
+                          {genericModal.form.rank_name || genericModal.form.rank}
+                        </option>
+                      )}
                     {masterSearchOpts.ranks.map((r) => (
                       <option key={r.id} value={String(r.id)}>{r.name}</option>
                     ))}
@@ -4448,31 +4553,59 @@ const CandidateDetails = () => {
                     type="text"
                     className="form-control"
                     value={genericModal.form.vessel_name}
+                    disabled={genericModal.viewOnly}
                     onChange={(e) => handleGenericFormChange("vessel_name", e.target.value)}
                   />
                 </div>
-                <div className="form-group"><label>Flag</label><input type="text" className="form-control" value={genericModal.form.flag} onChange={(e) => handleGenericFormChange("flag", e.target.value)} /></div>
+                <div className="form-group">
+                  <label>Flag</label>
+                  <select
+                    className="form-control"
+                    value={genericModal.form.flag || ""}
+                    disabled={genericModal.viewOnly}
+                    onChange={(e) => handleGenericFormChange("flag", e.target.value)}
+                  >
+                    <option value="">Select country</option>
+                    {genericModal.form.flag &&
+                      !countries.some((c) => String(c.name) === String(genericModal.form.flag)) && (
+                        <option value={genericModal.form.flag}>
+                          {genericModal.form.flag} (current)
+                        </option>
+                      )}
+                    {countries.map((c) => (
+                      <option key={c.id} value={c.name}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
                 <div className="form-group">
                   <label>Vessel type</label>
                   <select
                     className="form-control"
                     value={genericModal.form.vessel_type}
+                    disabled={genericModal.viewOnly}
                     onChange={(e) => handleGenericFormChange("vessel_type", e.target.value)}
                   >
                     <option value="">Select vessel type</option>
+                    {genericModal.form.vessel_type &&
+                      !(masterSearchOpts.vesselTypes || []).some((vt) => String(vt.id) === String(genericModal.form.vessel_type)) && (
+                        <option value={genericModal.form.vessel_type}>
+                          {genericModal.form.vessel_type_name || genericModal.form.vessel_type}
+                        </option>
+                      )}
                     {masterSearchOpts.vesselTypes.map((vt) => (
                       <option key={vt.id} value={String(vt.id)}>{vt.name}</option>
                     ))}
                   </select>
                 </div>
-                <div className="form-group"><label>GRT</label><input type="text" className="form-control" value={genericModal.form.grt} onChange={(e) => handleGenericFormChange("grt", e.target.value)} /></div>
-                <div className="form-group"><label>DWT</label><input type="text" className="form-control" value={genericModal.form.dwt} onChange={(e) => handleGenericFormChange("dwt", e.target.value)} /></div>
-                <div className="form-group"><label>BHP</label><input type="text" className="form-control" value={genericModal.form.bhp} onChange={(e) => handleGenericFormChange("bhp", e.target.value)} /></div>
+                <div className="form-group"><label>GRT</label><input type="text" className="form-control" value={genericModal.form.grt} disabled={genericModal.viewOnly} onChange={(e) => handleGenericFormChange("grt", e.target.value)} /></div>
+                <div className="form-group"><label>DWT</label><input type="text" className="form-control" value={genericModal.form.dwt} disabled={genericModal.viewOnly} onChange={(e) => handleGenericFormChange("dwt", e.target.value)} /></div>
+                <div className="form-group"><label>BHP</label><input type="text" className="form-control" value={genericModal.form.bhp} disabled={genericModal.viewOnly} onChange={(e) => handleGenericFormChange("bhp", e.target.value)} /></div>
                 <div className="form-group">
                   <label>Engine Make/Type</label>
                   <select
                     className="form-control"
                     value={genericModal.form.engine_type}
+                    disabled={genericModal.viewOnly}
                     onChange={(e) => handleGenericFormChange("engine_type", e.target.value)}
                   >
                     <option value="">Select Engine Make/Type</option>
@@ -4489,8 +4622,8 @@ const CandidateDetails = () => {
                     ))}
                   </select>
                 </div>
-                <div className="form-group"><label>Sign On Date</label><input type="date" className="form-control" value={genericModal.form.sign_on_date} onChange={(e) => handleGenericFormChange("sign_on_date", e.target.value)} /></div>
-                <div className="form-group"><label>Sign Off Date</label><input type="date" className="form-control" value={genericModal.form.sign_off_date} onChange={(e) => handleGenericFormChange("sign_off_date", e.target.value)} /></div>
+                <div className="form-group"><label>Sign On Date</label><input type="date" className="form-control" value={genericModal.form.sign_on_date} disabled={genericModal.viewOnly} onChange={(e) => handleGenericFormChange("sign_on_date", e.target.value)} /></div>
+                <div className="form-group"><label>Sign Off Date</label><input type="date" className="form-control" value={genericModal.form.sign_off_date} disabled={genericModal.viewOnly} onChange={(e) => handleGenericFormChange("sign_off_date", e.target.value)} /></div>
                 <div className="form-group">
                   <label>Period</label>
                   <input
@@ -4501,33 +4634,36 @@ const CandidateDetails = () => {
                     placeholder="Auto-calculated from sign on/off dates"
                   />
                 </div>
-                <div className="form-group"><label>Reason of Sign Off</label><input type="text" className="form-control" value={genericModal.form.reason_of_sign_off} onChange={(e) => handleGenericFormChange("reason_of_sign_off", e.target.value)} /></div>
+                <div className="form-group"><label>Reason of Sign Off</label><input type="text" className="form-control" value={genericModal.form.reason_of_sign_off} disabled={genericModal.viewOnly} onChange={(e) => handleGenericFormChange("reason_of_sign_off", e.target.value)} /></div>
                 <div className="form-group" style={{ gridColumn: "1 / -1" }}>
                   <label>Owner / Company</label>
                   <input
                     type="text"
                     className="form-control"
                     value={genericModal.form.owner_company}
+                    disabled={genericModal.viewOnly}
                     onChange={(e) => handleGenericFormChange("owner_company", e.target.value)}
                   />
                 </div>
                 <div className="form-group" style={{ gridColumn: "1 / -1" }}>
                   <label>
-                    Document Upload
-                    {genericModal.editingId ? " — leave empty to keep current file" : ""}
+                    {genericModal.viewOnly ? "Document" : "Document Upload"}
+                    {!genericModal.viewOnly && genericModal.editingId ? " — leave empty to keep current file" : ""}
                   </label>
+                  {!genericModal.viewOnly && (
                   <input
                     type="file"
                     className="form-control"
                     accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx"
                     onChange={(e) => setSeaServiceDocFile(pickDocumentFile(e))}
                   />
+                  )}
                   {seaServiceDocFile && (
                     <p className="text-muted small mb-0 mt-1">Selected: {seaServiceDocFile.name}</p>
                   )}
-                  {genericModal.editingId && genericModal.form.file_path && !seaServiceDocFile && (
+                  {genericModal.form.file_path && !seaServiceDocFile ? (
                     <p className="text-muted small mb-0 mt-1">
-                      Current file:{" "}
+                      {genericModal.viewOnly ? "Document: " : "Current file: "}
                       <a
                         href={
                           String(genericModal.form.file_path).startsWith("http")
@@ -4540,7 +4676,9 @@ const CandidateDetails = () => {
                         View
                       </a>
                     </p>
-                  )}
+                  ) : genericModal.viewOnly ? (
+                    <p className="text-muted small mb-0 mt-1">No document uploaded.</p>
+                  ) : null}
                 </div>
               </>)}
 
@@ -4926,10 +5064,12 @@ const CandidateDetails = () => {
               </>)}
             </div>
             <div className="modal-footer">
-              <button type="button" className="btn btn-secondary" onClick={closeGenericModal}>Cancel</button>
+              <button type="button" className="btn btn-secondary" onClick={closeGenericModal}>{genericModal.viewOnly ? "Close" : "Cancel"}</button>
+              {!genericModal.viewOnly && (
               <button type="button" className="btn btn-primary" disabled={genericModal.saving} onClick={saveGenericModal}>
                 {genericModal.saving ? "Saving..." : "Save"}
               </button>
+              )}
             </div>
           </div>
         </div>
@@ -4962,7 +5102,7 @@ const CandidateDetails = () => {
         }}
       />
 
-      {/* Sign On Documents modal: list docs and add new */}
+      {/* Sign On Documents modal: fixed categories, each with its own uploads */}
       {showSignOnDocModal && (
         <div className="modal d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }} tabIndex={-1}>
           <div className="modal-dialog modal-lg modal-dialog-scrollable">
@@ -4972,14 +5112,7 @@ const CandidateDetails = () => {
                 <button
                   type="button"
                   className="btn btn-sm btn-outline-secondary border-0 p-2"
-                  onClick={() => {
-                    setShowSignOnDocModal(false);
-                    setSignOnDocSignonId(null);
-                    setSignOnDocList([]);
-                    setSignOnDocEditingId(null);
-                    setSignOnDocEditDocumentId("");
-                    setSignOnDocFormKey((k) => k + 1);
-                  }}
+                  onClick={closeSignOnDocModal}
                   aria-label="Close"
                   title="Close"
                   style={{ fontSize: "1.5rem", lineHeight: 1 }}
@@ -4988,87 +5121,37 @@ const CandidateDetails = () => {
                 </button>
               </div>
               <div className="modal-body">
-                <h6 className="mb-2">Documents</h6>
-                <div className="table-responsive mb-3">
-                  <table className="table table-bordered table-sm">
-                    <thead>
-                      <tr>
-                        <th>Document Name</th>
-                        <th>View</th>
-                        <th>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {signOnDocList.length === 0 ? (
-                        <tr><td colSpan={4} className="text-muted">No documents yet. Add one below.</td></tr>
-                      ) : (
-                        signOnDocList.map((d) => (
-                          <tr key={d.id}>
-                            <td>{d.document_name ?? d.document_id ?? "-"}</td>
-                            <td>
-                              {d.view_url ? (
-                                <a href={d.view_url} target="_blank" rel="noopener noreferrer">View</a>
-                              ) : "-"}
-                            </td>
-                            <td className="action-cell-with-audit">
-                              <ActionToolbar record={d}>
-                                <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => handleEditSignOnDocument(d)}><i className="fas fa-pen" /></button>
-                                <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleDeleteSignOnDocument(d.id)}><i className="fas fa-trash" /></button>
-                              </ActionToolbar>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-                <hr />
-                <div className="d-flex align-items-center justify-content-between mb-2 gap-2">
-                  <h6 className="mb-0">{signOnDocEditingId ? "Update Document" : "Add Document"}</h6>
-                  {signOnDocEditingId && (
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-outline-secondary"
-                      onClick={() => {
-                        setSignOnDocEditingId(null);
-                        setSignOnDocEditDocumentId("");
-                        setSignOnDocFormKey((k) => k + 1);
-                      }}
-                    >
-                      Cancel
+                {signOnDocError && (
+                  <div className="alert alert-danger py-2 small mb-2" role="alert">{signOnDocError}</div>
+                )}
+                {!readOnly && (
+                  <div className="small" style={{ color: "var(--text-secondary)", fontWeight: 600 }}>
+                    Document Uploads (max 20 MB each). Choosing a file uploads it immediately; each category can hold several files.
+                  </div>
+                )}
+                <SignOnDocumentsGrid
+                  documents={signOnDocList}
+                  loading={signOnDocLoading && signOnDocList.length === 0}
+                  busyKey={signOnDocBusyKey}
+                  onAddFile={editable(handleSignOnDocAddFile)}
+                  onReplace={editable(handleSignOnDocReplace)}
+                  onDelete={editable(handleDeleteSignOnDocument)}
+                />
+              </div>
+              <div className="modal-footer">
+                {isAdmin && signOnDocModalRecord && (
+                  <>
+                    <button type="button" className="btn btn-sm btn-outline-danger" style={{ marginRight: "auto" }} onClick={() => deleteSignOnRecordFromModal(signOnDocModalRecord.id, closeSignOnDocModal)}>
+                      <i className="fas fa-trash" /> Delete Sign-On Record
                     </button>
-                  )}
-                </div>
-                <form onSubmit={handleAddSignOnDocument} className="small">
-                  <div className="mb-2">
-                    <label className="form-label">Document type</label>
-                    <select
-                      name="document_id"
-                      className="form-select form-select-sm"
-                      required
-                      value={signOnDocEditDocumentId}
-                      onChange={(e) => setSignOnDocEditDocumentId(e.target.value)}
-                    >
-                      <option value="">Select document</option>
-                      {signOnDocumentTypes.map((t) => (
-                        <option key={t.id} value={t.id}>{t.name ?? t.option ?? t.id}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="mb-2">
-                    <label className="form-label">File (optional)</label>
-                    <input
-                      key={signOnDocFormKey}
-                      type="file"
-                      name="file_path"
-                      className="form-control form-control-sm"
-                      accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
-                    />
-                  </div>
-                  <button type="submit" className="btn btn-primary btn-sm" disabled={signOnDocUploading}>
-                    {signOnDocUploading ? "Saving…" : (signOnDocEditingId ? "Update Document" : "Add Document")}
-                  </button>
-                </form>
+                    <button type="button" className="btn btn-sm btn-outline-secondary" onClick={editSignOnRecordFromDocModal}>
+                      <i className="fas fa-pen" /> Edit Sign-On Record
+                    </button>
+                  </>
+                )}
+                <button type="button" className="btn btn-sm btn-secondary" onClick={closeSignOnDocModal}>
+                  Close
+                </button>
               </div>
             </div>
           </div>
@@ -5087,10 +5170,7 @@ const CandidateDetails = () => {
                 <button
                   type="button"
                   className="btn btn-sm btn-outline-secondary border-0 p-2"
-                  onClick={() => {
-                    setShowPostSignOnRecordModal(false);
-                    setPostSignOnRecordEditingId(null);
-                  }}
+                  onClick={closePostSignOnRecordModal}
                   aria-label="Close"
                   title="Close"
                   style={{ fontSize: "1.5rem", lineHeight: 1 }}
@@ -5098,8 +5178,8 @@ const CandidateDetails = () => {
                   &times;
                 </button>
               </div>
-              <div className="modal-body modal-form-row">
-                <form onSubmit={submitPostSignOnRecord} className="modal-body modal-form-row p-0">
+              <div className="modal-body">
+                <form onSubmit={submitPostSignOnRecord} className="modal-body modal-form-row signon-record-form p-0">
                   <div className="form-group">
                     <label>Vessel</label>
                     <select
@@ -5270,11 +5350,36 @@ const CandidateDetails = () => {
                     />
                   </div>
 
+                  <div className="form-group full-width">
+                    <label>Document Uploads (max 20 MB each)</label>
+                    <SignOnDocumentsGrid
+                      documents={postSignOnRecordDocs}
+                      loading={postSignOnRecordDocsLoading}
+                      pending={postSignOnRecordFiles}
+                      onAddFile={stagePostSignOnRecordFile}
+                      onRemovePending={unstagePostSignOnRecordFile}
+                      onDelete={postSignOnRecordEditingId != null ? deletePostSignOnRecordDoc : undefined}
+                      onReplace={postSignOnRecordEditingId != null ? replacePostSignOnRecordDoc : undefined}
+                      disabled={postSignOnRecordSaving}
+                    />
+                    <span className="text-muted small">
+                      Selected files are uploaded when you click {postSignOnRecordEditingId != null ? "Update" : "Add"}.
+                    </span>
+                  </div>
+
                   <div className="form-actions full-width">
-                    <button type="button" className="btn btn-sm btn-secondary" onClick={() => {
-                      setShowPostSignOnRecordModal(false);
-                      setPostSignOnRecordEditingId(null);
-                    }}>
+                    {isAdmin && postSignOnRecordEditingId != null && (
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-danger"
+                        style={{ marginRight: "auto" }}
+                        disabled={postSignOnRecordSaving}
+                        onClick={() => deleteSignOnRecordFromModal(postSignOnRecordEditingId, closePostSignOnRecordModal)}
+                      >
+                        <i className="fas fa-trash" /> Delete Sign-On Record
+                      </button>
+                    )}
+                    <button type="button" className="btn btn-sm btn-secondary" onClick={closePostSignOnRecordModal}>
                       Cancel
                     </button>
                     <button type="submit" className="btn btn-sm btn-primary" disabled={postSignOnRecordSaving}>
@@ -6021,10 +6126,12 @@ const AddressSection = ({ formData, countries, onAddEdit }) => {
           <h6 className="address-section-title">Address &amp; contact</h6>
           <p className="address-section-subtitle">Residence, location, travel airports, and reachability details</p>
         </div>
-        <button type="button" className="btn btn-primary address-edit-btn" onClick={onAddEdit}>
-          <i className="fas fa-pen" aria-hidden />
-          {hasData ? "Edit details" : "Add details"}
-        </button>
+        {onAddEdit && (
+          <button type="button" className="btn btn-primary address-edit-btn" onClick={onAddEdit}>
+            <i className="fas fa-pen" aria-hidden />
+            {hasData ? "Edit details" : "Add details"}
+          </button>
+        )}
       </div>
 
       {hasData ? (
@@ -6084,10 +6191,14 @@ const AddressSection = ({ formData, countries, onAddEdit }) => {
             <i className="fas fa-map-marked-alt" />
           </div>
           <h6>No address on file</h6>
-          <p>Add residence, location, and contact information for this candidate.</p>
-          <button type="button" className="btn btn-primary" onClick={onAddEdit}>
-            Add address details
-          </button>
+          {onAddEdit && (
+            <>
+              <p>Add residence, location, and contact information for this candidate.</p>
+              <button type="button" className="btn btn-primary" onClick={onAddEdit}>
+                Add address details
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -6107,9 +6218,11 @@ const NokSection = ({ nokDocs, candidateData, formData, onAddNew, onEdit, fetchC
     <div className="basic-sub-section nok-section">
       <div className="section-header-row">
         <h6 className="section-title">Next of Kin</h6>
-        <button type="button" className="btn btn-sm btn-info" onClick={onAddNew}>
-          Add New
-        </button>
+        {onAddNew && (
+          <button type="button" className="btn btn-sm btn-info" onClick={onAddNew}>
+            Add New
+          </button>
+        )}
       </div>
       {nokDocs.length > 0 ? (
         <div className="table-responsive">
@@ -6144,8 +6257,12 @@ const NokSection = ({ nokDocs, candidateData, formData, onAddNew, onEdit, fetchC
                   <td>{nok.file_path ? <a href={nok.file_path} target="_blank" rel="noopener noreferrer">View</a> : "-"}</td>
                   <td className="action-cell-with-audit">
                     <ActionToolbar record={nok}>
-                      <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => onEdit && onEdit(nok)}><i className="fas fa-pen" /></button>
-                      <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => { /* delete */ }}><i className="fas fa-trash" /></button>
+                      {onEdit && (
+                        <>
+                          <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => onEdit(nok)}><i className="fas fa-pen" /></button>
+                          <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => { /* delete */ }}><i className="fas fa-trash" /></button>
+                        </>
+                      )}
                     </ActionToolbar>
                   </td>
                 </tr>
@@ -6163,8 +6280,8 @@ const NokSection = ({ nokDocs, candidateData, formData, onAddNew, onEdit, fetchC
         </table>
       ) : (
         <div className="empty-state">
-          <p>No Next of Kin information. Click &quot;Add New&quot; to add.</p>
-          <button type="button" className="btn btn-primary btn-sm" onClick={onAddNew}>Add NOK</button>
+          <p>No Next of Kin information.{onAddNew && <> Click &quot;Add New&quot; to add.</>}</p>
+          {onAddNew && <button type="button" className="btn btn-primary btn-sm" onClick={onAddNew}>Add NOK</button>}
         </div>
       )}
     </div>
@@ -6179,9 +6296,11 @@ const AdditionalInfoSection = ({ additionalInfo, candidateData, onEdit }) => {
     <div className="basic-sub-section additional-info-section">
       <div className="section-header-row">
         <h6 className="section-title">Additional Info</h6>
-        <button type="button" className="btn btn-sm btn-primary" onClick={onEdit}>
-          {hasInfo ? "Edit" : "Add"} Additional Info
-        </button>
+        {onEdit && (
+          <button type="button" className="btn btn-sm btn-primary" onClick={onEdit}>
+            {hasInfo ? "Edit" : "Add"} Additional Info
+          </button>
+        )}
       </div>
       {hasInfo ? (
         <table className="basic-detail-table additional-info-table">
@@ -6369,29 +6488,33 @@ function DocumentRowActions({
           </svg>
         </button>
       )}
-      <button
-        type="button"
-        className="doc-action-btn doc-action-edit"
-        onClick={onEdit}
-        title="Edit"
-        aria-label="Edit document"
-      >
-        <svg className="doc-action-icon-svg" viewBox="0 0 24 24" aria-hidden focusable="false">
-          <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-          <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-        </svg>
-      </button>
-      <button
-        type="button"
-        className="doc-action-btn doc-action-delete"
-        onClick={onDelete}
-        title="Delete"
-        aria-label="Delete document"
-      >
-        <svg className="doc-action-icon-svg" viewBox="0 0 24 24" aria-hidden focusable="false">
-          <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
-        </svg>
-      </button>
+      {onEdit && (
+        <button
+          type="button"
+          className="doc-action-btn doc-action-edit"
+          onClick={onEdit}
+          title="Edit"
+          aria-label="Edit document"
+        >
+          <svg className="doc-action-icon-svg" viewBox="0 0 24 24" aria-hidden focusable="false">
+            <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+            <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+          </svg>
+        </button>
+      )}
+      {onDelete && (
+        <button
+          type="button"
+          className="doc-action-btn doc-action-delete"
+          onClick={onDelete}
+          title="Delete"
+          aria-label="Delete document"
+        >
+          <svg className="doc-action-icon-svg" viewBox="0 0 24 24" aria-hidden focusable="false">
+            <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" />
+          </svg>
+        </button>
+      )}
       <RecordAuditPopover record={record} />
     </div>
   );
@@ -6442,9 +6565,11 @@ const PassportSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => {
     <div className="document-section">
       <div className="section-header">
         <h3>🛂 Passport Documents</h3>
-        <button className="btn btn-primary" onClick={onAddNew}>
-          ➕ Add Passport
-        </button>
+        {onAddNew && (
+          <button className="btn btn-primary" onClick={onAddNew}>
+            ➕ Add Passport
+          </button>
+        )}
       </div>
 
       {passportDocs.length > 0 ? (
@@ -6491,8 +6616,8 @@ const PassportSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => {
                             setSelectedDoc(selectedDoc?.id === doc.id ? null : doc)
                           }
                           onDownload={() => handleDownload(doc)}
-                          onEdit={() => onEdit(doc)}
-                          onDelete={() => onDelete(doc.id)}
+                          onEdit={onEdit && (() => onEdit(doc))}
+                          onDelete={onDelete && (() => onDelete(doc.id))}
                         />
                       </td>
                     </tr>
@@ -6629,9 +6754,11 @@ const CdcSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => {
     <div className="document-section">
       <div className="section-header">
         <h3>📘 CDC Documents</h3>
-        <button className="btn btn-primary" onClick={onAddNew}>
-          ➕ Add CDC
-        </button>
+        {onAddNew && (
+          <button className="btn btn-primary" onClick={onAddNew}>
+            ➕ Add CDC
+          </button>
+        )}
       </div>
 
       {cdcDocs.length > 0 ? (
@@ -6678,8 +6805,8 @@ const CdcSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => {
                             setSelectedDoc(selectedDoc?.id === doc.id ? null : doc)
                           }
                           onDownload={() => handleDownload(doc)}
-                          onEdit={() => onEdit(doc)}
-                          onDelete={() => onDelete(doc.id)}
+                          onEdit={onEdit && (() => onEdit(doc))}
+                          onDelete={onDelete && (() => onDelete(doc.id))}
                         />
                       </td>
                     </tr>
@@ -6815,9 +6942,11 @@ const LicenseSection = ({ licenses, onAddNew, onDelete, onEdit }) => {
     <div className="document-section">
       <div className="section-header">
         <h3>📜 License Documents</h3>
-        <button className="btn btn-primary" onClick={onAddNew}>
-          ➕ Add License
-        </button>
+        {onAddNew && (
+          <button className="btn btn-primary" onClick={onAddNew}>
+            ➕ Add License
+          </button>
+        )}
       </div>
 
       {licenses.length > 0 ? (
@@ -6875,8 +7004,8 @@ const LicenseSection = ({ licenses, onAddNew, onDelete, onEdit }) => {
                             )
                           }
                           onDownload={() => handleDownload(license)}
-                          onEdit={() => onEdit(license)}
-                          onDelete={() => onDelete(license.id)}
+                          onEdit={onEdit && (() => onEdit(license))}
+                          onDelete={onDelete && (() => onDelete(license.id))}
                         />
                       </td>
                     </tr>
@@ -7014,9 +7143,11 @@ const StcwDocumentsSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => 
     <div className="document-section">
       <div className="section-header">
         <h3>📑 STCW Documents</h3>
-        <button type="button" className="btn btn-primary" onClick={onAddNew}>
-          ➕ Add STCW / training certificate
-        </button>
+        {onAddNew && (
+          <button type="button" className="btn btn-primary" onClick={onAddNew}>
+            ➕ Add STCW / training certificate
+          </button>
+        )}
       </div>
 
       {stcwDocs.length > 0 ? (
@@ -7067,8 +7198,8 @@ const StcwDocumentsSection = ({ seafarersDocs, onAddNew, onDelete, onEdit }) => 
                             setSelectedDoc(selectedDoc?.id === doc.id ? null : doc)
                           }
                           onDownload={() => handleDownload(doc)}
-                          onEdit={() => onEdit(doc)}
-                          onDelete={() => onDelete(doc.id)}
+                          onEdit={onEdit && (() => onEdit(doc))}
+                          onDelete={onDelete && (() => onDelete(doc.id))}
                         />
                       </td>
                     </tr>
@@ -7195,9 +7326,11 @@ const DceDocumentsSection = ({ dceDocs, onAddNew, onDelete, onEdit }) => {
     <div className="document-section">
       <div className="section-header">
         <h3>📋 DCE Documents</h3>
-        <button type="button" className="btn btn-primary" onClick={onAddNew}>
-          ➕ Add DCE document
-        </button>
+        {onAddNew && (
+          <button type="button" className="btn btn-primary" onClick={onAddNew}>
+            ➕ Add DCE document
+          </button>
+        )}
       </div>
       {dceDocs.length > 0 ? (
         <div className="passport-container">
@@ -7242,8 +7375,8 @@ const DceDocumentsSection = ({ dceDocs, onAddNew, onDelete, onEdit }) => {
                           hasFile={!!fileUrl(doc)}
                           onPreview={() => setSelectedDoc(selectedDoc?.id === doc.id ? null : doc)}
                           onDownload={() => handleDownload(doc)}
-                          onEdit={() => onEdit(doc)}
-                          onDelete={() => onDelete(doc.id)}
+                          onEdit={onEdit && (() => onEdit(doc))}
+                          onDelete={onDelete && (() => onDelete(doc.id))}
                         />
                       </td>
                     </tr>
@@ -7325,9 +7458,11 @@ const ValueAddedDocumentsSection = ({ valueCourses, onAddNew, onDelete, onEdit }
     <div className="document-section">
       <div className="section-header">
         <h3>📌 Value Added Course Documents</h3>
-        <button type="button" className="btn btn-primary" onClick={onAddNew}>
-          ➕ Add value added course
-        </button>
+        {onAddNew && (
+          <button type="button" className="btn btn-primary" onClick={onAddNew}>
+            ➕ Add value added course
+          </button>
+        )}
       </div>
       {valueCourses.length > 0 ? (
         <div className="passport-container">
@@ -7372,8 +7507,8 @@ const ValueAddedDocumentsSection = ({ valueCourses, onAddNew, onDelete, onEdit }
                           hasFile={!!fileUrl(doc)}
                           onPreview={() => setSelectedDoc(selectedDoc?.id === doc.id ? null : doc)}
                           onDownload={() => handleDownload(doc)}
-                          onEdit={() => onEdit(doc)}
-                          onDelete={() => onDelete(doc.id)}
+                          onEdit={onEdit && (() => onEdit(doc))}
+                          onDelete={onDelete && (() => onDelete(doc.id))}
                         />
                       </td>
                     </tr>
@@ -7492,9 +7627,11 @@ const VisaSection = ({ candidateId, seafarersDocs, onAddNew, onDelete, onEdit })
     <div className="document-section">
       <div className="section-header">
         <h3>✈️ Visa Documents</h3>
-        <button type="button" className="btn btn-primary" onClick={onAddNew}>
-          ➕ Add Visa
-        </button>
+        {onAddNew && (
+          <button type="button" className="btn btn-primary" onClick={onAddNew}>
+            ➕ Add Visa
+          </button>
+        )}
       </div>
 
       {visaDocs.length > 0 ? (
@@ -7572,8 +7709,8 @@ const VisaSection = ({ candidateId, seafarersDocs, onAddNew, onDelete, onEdit })
                             setSelectedDoc(selectedDoc?.id === doc.id ? null : doc)
                           }
                           onDownload={() => handleDownload(doc)}
-                          onEdit={() => onEdit(doc)}
-                          onDelete={() => onDelete(doc.id)}
+                          onEdit={onEdit && (() => onEdit(doc))}
+                          onDelete={onDelete && (() => onDelete(doc.id))}
                         />
                       </td>
                     </tr>
@@ -7871,8 +8008,8 @@ const EducationalDocuments = ({ edDocs, onDelete, onEdit, onAddNew }) => {
                             )
                           }
                           onDownload={() => handleDownload(edDoc)}
-                          onEdit={() => onEdit(edDoc)}
-                          onDelete={() => onDelete(edDoc.id)}
+                          onEdit={onEdit && (() => onEdit(edDoc))}
+                          onDelete={onDelete && (() => onDelete(edDoc.id))}
                         />
                       </td>
                     </tr>
@@ -8062,8 +8199,8 @@ const VerificationDocuments = ({ edDocs, onDelete, onEdit, onAddNew }) => {
                             )
                           }
                           onDownload={() => handleDownload(edDoc)}
-                          onEdit={() => onEdit(edDoc)}
-                          onDelete={() => onDelete(edDoc.id)}
+                          onEdit={onEdit && (() => onEdit(edDoc))}
+                          onDelete={onDelete && (() => onDelete(edDoc.id))}
                         />
                       </td>
                     </tr>

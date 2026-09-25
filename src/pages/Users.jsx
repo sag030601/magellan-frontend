@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../lib/api";
-import { fetchUsers, queryKeys } from "../hooks/queries";
+import { fetchUsers, fetchVesselMetaOptions, queryKeys } from "../hooks/queries";
 
-const EMPTY_FORM = { name: "", email: "", password: "", role: "admin" };
+const EMPTY_FORM = { name: "", email: "", password: "", role: "admin", owner_id: "" };
 
 export default function Users() {
   const queryClient = useQueryClient();
@@ -17,9 +17,21 @@ export default function Users() {
     queryFn: fetchUsers,
   });
 
+  const { data: vesselMeta = { employers: [] } } = useQuery({
+    queryKey: queryKeys.vesselMetaOptions,
+    queryFn: fetchVesselMetaOptions,
+    staleTime: 5 * 60 * 1000,
+  });
+  const principals = vesselMeta.employers || [];
+
   const saveMutation = useMutation({
     mutationFn: async ({ editingId: eid, form: f }) => {
-      const payload = { name: f.name, email: f.email, role: f.role };
+      const payload = {
+        name: f.name,
+        email: f.email,
+        role: f.role,
+        owner_id: f.role === "user" && f.owner_id ? Number(f.owner_id) : null,
+      };
       if (f.password) payload.password = f.password;
       if (eid) {
         const res = await apiFetch(`/api/auth/users/${eid}`, { method: "PUT", body: JSON.stringify(payload) });
@@ -63,7 +75,13 @@ export default function Users() {
 
   const openEdit = (u) => {
     setEditingId(u.id);
-    setForm({ name: u.name, email: u.email, password: "", role: u.role || "admin" });
+    setForm({
+      name: u.name,
+      email: u.email,
+      password: "",
+      role: u.role || "admin",
+      owner_id: u.owner_id != null ? String(u.owner_id) : "",
+    });
     setFormError("");
     setShowModal(true);
   };
@@ -130,13 +148,14 @@ export default function Users() {
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider">Name</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider">Email</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider">Role</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider">Principal</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider">Created</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-right users-actions-cell">Actions</th>
               </tr>
             </thead>
             <tbody>
               {users.length === 0 ? (
-                <tr><td colSpan={6} className="px-4 py-12 text-center" style={{ color: "var(--text-tertiary)" }}>No users found</td></tr>
+                <tr><td colSpan={7} className="px-4 py-12 text-center" style={{ color: "var(--text-tertiary)" }}>No users found</td></tr>
               ) : users.map((u) => (
                 <tr key={u.id} style={{ borderBottom: "1px solid var(--border-primary)" }}>
                   <td className="px-4 py-3" style={{ color: "var(--text-tertiary)" }}>{u.id}</td>
@@ -152,6 +171,9 @@ export default function Users() {
                     >
                       {(u.role || "admin").toUpperCase()}
                     </span>
+                  </td>
+                  <td className="px-4 py-3" style={{ color: "var(--text-secondary)" }}>
+                    {u.role === "user" && u.principal_name ? u.principal_name : "\u2014"}
                   </td>
                   <td className="px-4 py-3 cell-nowrap" style={{ color: "var(--text-tertiary)" }} title={u.created_at != null ? String(u.created_at) : ""}>{fmtDate(u.created_at)}</td>
                   <td className="px-4 py-3 users-actions-cell">
@@ -196,6 +218,29 @@ export default function Users() {
                   <option value="user">User</option>
                 </select>
               </div>
+              {form.role === "user" && (
+                <div>
+                  <label className="block text-sm font-medium mb-1" style={{ color: "var(--text-secondary)" }}>
+                    Principal <span style={{ color: "var(--text-tertiary)", fontWeight: 400 }}>(optional)</span>
+                  </label>
+                  <select
+                    value={form.owner_id}
+                    onChange={(e) => setForm({ ...form, owner_id: e.target.value })}
+                    className="form-control"
+                  >
+                    <option value="">No Principal (full access)</option>
+                    {form.owner_id && !principals.some((p) => String(p.id) === form.owner_id) && (
+                      <option value={form.owner_id}>Principal #{form.owner_id} (current)</option>
+                    )}
+                    {principals.map((p) => (
+                      <option key={p.id} value={String(p.id)}>{p.principle_name || `Owner #${p.id}`}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs mt-1 mb-0" style={{ color: "var(--text-tertiary)" }}>
+                    With a Principal, this user only sees candidates currently on board one of that Principal&apos;s vessels.
+                  </p>
+                </div>
+              )}
               <div className="flex justify-end gap-3 pt-2">
                 <button type="button" onClick={() => setShowModal(false)} className="btn btn-secondary">Cancel</button>
                 <button type="submit" disabled={saving} className="btn btn-primary" style={{ opacity: saving ? 0.6 : 1 }}>

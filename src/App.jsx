@@ -4,6 +4,7 @@ import "./App.css";
 import { AuthProvider } from "./context/AuthContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import AdminRoute from "./components/AdminRoute";
+import PrincipalModuleRoute from "./components/PrincipalModuleRoute";
 import AdminLayout from "./layouts/AdminLayout";
 
 const Login = lazy(() => import("./pages/Login"));
@@ -48,17 +49,17 @@ function App() {
             <Route path="/admin" element={<ProtectedRoute><AdminLayout /></ProtectedRoute>}>
               <Route index element={<Candidates />} />
               <Route path="candidates" element={<Candidates />} />
-              <Route path="add-candidate" element={<Candidates />} />
+              <Route path="add-candidate" element={<PrincipalModuleRoute><Candidates /></PrincipalModuleRoute>} />
               <Route path="candidates/:id" element={<CandidateDetails />} />
-              <Route path="owner" element={<Owners />} />
-              <Route path="owner/form" element={<OwnerForm />} />
-              <Route path="owner/:id/edit" element={<OwnerForm />} />
-              <Route path="vessel" element={<Vessels />} />
-              <Route path="vessel/form" element={<VesselForm />} />
-              <Route path="vessel/:id/edit" element={<VesselForm />} />
+              <Route path="owner" element={<PrincipalModuleRoute><Owners /></PrincipalModuleRoute>} />
+              <Route path="owner/form" element={<PrincipalModuleRoute><OwnerForm /></PrincipalModuleRoute>} />
+              <Route path="owner/:id/edit" element={<PrincipalModuleRoute><OwnerForm /></PrincipalModuleRoute>} />
+              <Route path="vessel" element={<PrincipalModuleRoute><Vessels /></PrincipalModuleRoute>} />
+              <Route path="vessel/form" element={<PrincipalModuleRoute><VesselForm /></PrincipalModuleRoute>} />
+              <Route path="vessel/:id/edit" element={<PrincipalModuleRoute><VesselForm /></PrincipalModuleRoute>} />
               <Route path="report" element={<SignOnSignOffReport />} />
               <Route path="document-report" element={<DocumentReport />} />
-              <Route path="activity-log" element={<ActivityLog />} />
+              <Route path="activity-log" element={<PrincipalModuleRoute><ActivityLog /></PrincipalModuleRoute>} />
               <Route path="users" element={<AdminRoute><Users /></AdminRoute>} />
               <Route path="country" element={<AdminRoute><MasterData /></AdminRoute>} />
               <Route path="state" element={<AdminRoute><MasterData /></AdminRoute>} />

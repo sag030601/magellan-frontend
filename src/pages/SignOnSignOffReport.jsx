@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { downloadReportCsv, downloadReportPdf } from "../lib/reportExport";
+import { useAuth } from "../context/AuthContext";
 import { fetchReportFilterOptions, fetchSignOnOffReport, queryKeys } from "../hooks/queries";
 import { readListFilterMemory, writeListFilterMemory } from "../lib/listFilterMemory";
 
@@ -106,9 +107,11 @@ export default function SignOnSignOffReport() {
     writeListFilterMemory(FILTER_MEMORY_KEY, { filters });
   }, [filters]);
 
-  const { data: optsData, isLoading: loadingOptions, error: optsError } = useQuery({
-    queryKey: queryKeys.reportFilterOptions,
-    queryFn: fetchReportFilterOptions,
+  const { user } = useAuth();
+  const { data: optsData, isLoading: loadingOptions, isPlaceholderData, error: optsError } = useQuery({
+    queryKey: [...queryKeys.reportFilterOptions, user?.id ?? null, filters.employer_principal || null],
+    queryFn: () => fetchReportFilterOptions(filters.employer_principal),
+    placeholderData: (prev) => prev,
     staleTime: 5 * 60 * 1000,
   });
   const principals = optsData?.principals || [];
@@ -117,18 +120,30 @@ export default function SignOnSignOffReport() {
   const vesselTypes = optsData?.vesselTypes || [];
   const countries = optsData?.countries || [];
 
+  // A Principal-restricted user is locked to their assigned Principal (also enforced by the API).
+  const lockedPrincipalId = optsData?.locked_principal_id != null ? String(optsData.locked_principal_id) : "";
+  const principalValue = lockedPrincipalId || filters.employer_principal;
+  const vesselValue = !optsData || isPlaceholderData || vesselNames.includes(filters.vessel_name) ? filters.vessel_name : "";
+
   const reportMutation = useMutation({
     mutationFn: fetchSignOnOffReport,
   });
 
-  const handleChange = (e) => setFilters((prev) => ({ ...prev, [e.target.name]: e.target.value }));
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFilters((prev) => ({
+      ...prev,
+      [name]: value,
+      ...(name === "employer_principal" ? { vessel_name: "" } : {}),
+    }));
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!filters.status) { setFormError("Please select a type."); return; }
     setFormError(null);
     reportMutation.reset();
-    reportMutation.mutate(filters);
+    reportMutation.mutate({ ...filters, employer_principal: principalValue, vessel_name: vesselValue });
   };
 
   const result = reportMutation.data;
@@ -175,14 +190,21 @@ export default function SignOnSignOffReport() {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               <div>
                 <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-secondary)" }}>Name of Employer/Principal</label>
-                <select name="employer_principal" value={filters.employer_principal} onChange={handleChange} className={fieldCls} style={fieldStyle}>
-                  <option value="">Select Employer/Principal</option>
+                <select
+                  name="employer_principal"
+                  value={principalValue}
+                  onChange={handleChange}
+                  disabled={Boolean(lockedPrincipalId)}
+                  className={fieldCls}
+                  style={fieldStyle}
+                >
+                  {!lockedPrincipalId && <option value="">Select Employer/Principal</option>}
                   {principals.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </div>
               <div>
                 <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-secondary)" }}>Vessel Name</label>
-                <select name="vessel_name" value={filters.vessel_name} onChange={handleChange} className={fieldCls} style={fieldStyle}>
+                <select name="vessel_name" value={vesselValue} onChange={handleChange} className={fieldCls} style={fieldStyle}>
                   <option value="">Select Vessel Name</option>
                   {vesselNames.map((n) => <option key={n} value={n}>{n}</option>)}
                 </select>

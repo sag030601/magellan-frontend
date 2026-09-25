@@ -53,14 +53,20 @@ export async function fetchOwner(id) {
   return data.owner || {};
 }
 
-export async function fetchReportFilterOptions() {
-  const res = await apiFetch("/api/reports/filter-options");
+function principalQuery(principalId) {
+  return principalId ? `?employer_principal=${encodeURIComponent(principalId)}` : "";
+}
+
+/** @param {string|number} [principalId] narrows `vesselNames` to that Principal's vessels */
+export async function fetchReportFilterOptions(principalId) {
+  const res = await apiFetch(`/api/reports/filter-options${principalQuery(principalId)}`);
   if (!res.ok) throw new Error("Failed to load filter options");
   return res.json();
 }
 
-export async function fetchDocumentFilterOptions() {
-  const res = await apiFetch("/api/reports/document-filter-options");
+/** @param {string|number} [principalId] narrows `vesselNames` to that Principal's vessels */
+export async function fetchDocumentFilterOptions(principalId) {
+  const res = await apiFetch(`/api/reports/document-filter-options${principalQuery(principalId)}`);
   if (!res.ok) throw new Error("Failed to load report options");
   return res.json();
 }
