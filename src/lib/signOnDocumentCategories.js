@@ -1,10 +1,10 @@
 /** Fixed Sign-on document categories (mirrors server/lib/signOnDocumentCategories.js). */
 export const SIGN_ON_DOCUMENT_CATEGORIES = Object.freeze([
   { key: "flight_ticket", label: "Flight Ticket" },
-  { key: "bg_emigration_form_1", label: "BG E-Migration Form 1" },
+  { key: "bg_emigration_form_1", label: "DG E-Migration Form 1" },
   { key: "signon_confirmation_email", label: "Sign-on Confirmation Email" },
   { key: "dg_signon_form_1", label: "DG Signon Form 1" },
-  { key: "contract_c", label: "Contract/C" },
+  { key: "contract_c", label: "Contract/SEA" },
   { key: "cos", label: "COS" },
   { key: "others", label: "Others" },
 ]);

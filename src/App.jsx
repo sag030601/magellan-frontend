@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import "./App.css";
 import { AuthProvider } from "./context/AuthContext";
+import { useAuthScopedCacheReset } from "./hooks/useAuthScopedCacheReset";
 import ProtectedRoute from "./components/ProtectedRoute";
 import AdminRoute from "./components/AdminRoute";
 import PrincipalModuleRoute from "./components/PrincipalModuleRoute";
@@ -37,9 +38,15 @@ function PageLoader() {
   );
 }
 
+function AuthScopedCacheReset() {
+  useAuthScopedCacheReset();
+  return null;
+}
+
 function App() {
   return (
     <AuthProvider>
+      <AuthScopedCacheReset />
       <Router>
         <Suspense fallback={<PageLoader />}>
           <Routes>

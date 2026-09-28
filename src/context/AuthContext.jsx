@@ -1,4 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback } from "react";
+import { queryClient } from "../lib/queryClient.js";
+import { resetAuthScopedClientState } from "../lib/resetAuthScopedClientState.js";
 
 const AuthContext = createContext(null);
 const API = import.meta.env.VITE_API_URL || "";
@@ -18,6 +20,7 @@ export function AuthProvider({ children }) {
   const logout = useCallback(() => {
     setToken(null);
     setUser(null);
+    resetAuthScopedClientState(queryClient);
   }, []);
 
   const login = useCallback(async (email, password) => {

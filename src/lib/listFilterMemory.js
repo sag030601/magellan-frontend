@@ -18,3 +18,8 @@ export function writeListFilterMemory(key, value) {
 export function clearListFilterMemory(key) {
   store.delete(key);
 }
+
+/** Clears all in-memory list/report filters (used when the authenticated user changes). */
+export function clearAllListFilterMemory() {
+  store.clear();
+}
