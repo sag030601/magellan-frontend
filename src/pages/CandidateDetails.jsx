@@ -794,7 +794,7 @@ const CandidateDetails = () => {
 
   const openGenericModal = async (type, row = null, { viewOnly = false } = {}) => {
     const defaults = {
-      services: { rank: "", vessel_name: "", flag: "", vessel_type: "", grt: "", dwt: "", bhp: "", engine_type: "", sign_on_date: "", sign_off_date: "", period: "", reason_of_sign_off: "", owner_company: "", file_path: "" },
+      services: { rank: "", vessel_name: "", flag: "", vessel_type: "", grt: "", dwt: "", bhp: "", engine_type: "", sign_on_date: "", sign_off_date: "", period: "", reason_of_sign_off: "", owner_company: "", aramco_sailing: "no", file_path: "" },
       proposal: {
         rank: "",
         vessel_name: "",
@@ -1046,6 +1046,7 @@ const CandidateDetails = () => {
           "period",
           "reason_of_sign_off",
           "owner_company",
+          "aramco_sailing",
         ].forEach((k) => fd.append(k, form[k] ?? ""));
         if (seaServiceDocFile) fd.append("file", seaServiceDocFile);
         await axios[method](url, fd);
@@ -3435,6 +3436,7 @@ const CandidateDetails = () => {
                       <th>Period</th>
                       <th>Reason of Sign off</th>
                       <th>Owner/Company</th>
+                      <th>Aramco Sailing</th>
                       <th>Document</th>
                       <th>Action</th>
                     </tr>
@@ -3455,6 +3457,7 @@ const CandidateDetails = () => {
                         <td>{row.period ?? "-"}</td>
                         <td>{row.reason_of_sign_off ?? "-"}</td>
                         <td title={row.owner_company}>{row.owner_company ? (String(row.owner_company).length > 15 ? `${String(row.owner_company).slice(0, 15)}...` : row.owner_company) : "-"}</td>
+                        <td>{String(row.aramco_sailing || "no").toLowerCase() === "yes" ? "Yes" : "No"}</td>
                         <td>
                           {row.file_path ? (
                             <a
@@ -4635,6 +4638,18 @@ const CandidateDetails = () => {
                   />
                 </div>
                 <div className="form-group"><label>Reason of Sign Off</label><input type="text" className="form-control" value={genericModal.form.reason_of_sign_off} disabled={genericModal.viewOnly} onChange={(e) => handleGenericFormChange("reason_of_sign_off", e.target.value)} /></div>
+                <div className="form-group">
+                  <label>Aramco Sailing</label>
+                  <select
+                    className="form-control"
+                    value={genericModal.form.aramco_sailing || "no"}
+                    disabled={genericModal.viewOnly}
+                    onChange={(e) => handleGenericFormChange("aramco_sailing", e.target.value)}
+                  >
+                    <option value="no">No</option>
+                    <option value="yes">Yes</option>
+                  </select>
+                </div>
                 <div className="form-group" style={{ gridColumn: "1 / -1" }}>
                   <label>Owner / Company</label>
                   <input
