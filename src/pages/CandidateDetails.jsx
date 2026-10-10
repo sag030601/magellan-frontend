@@ -130,6 +130,73 @@ const PROPOSAL_DOC_FIELDS = [
   { key: "upload_file", label: "Attachment", icon: "fa-paperclip" },
 ];
 
+/** Sign-off row upload columns — same storage/URL pattern as Proposal. */
+const SIGNOFF_DOC_FIELDS = [
+  { key: "sign_off_confirmation_email_file", label: "Sign Off Confirmation Email", icon: "fa-envelope" },
+  { key: "flight_ticket_file", label: "Flight Ticket", icon: "fa-plane" },
+  { key: "exit_visa_file", label: "Exit Visa", icon: "fa-passport" },
+  { key: "seaman_book_stamp_file", label: "Seaman Book Stamp", icon: "fa-book" },
+  { key: "dg_sign_off_record_ind_form1_file", label: "DG Sign Off Record (IND) — FORM 1", icon: "fa-file-lines" },
+  { key: "debriefing_form_file", label: "DE-Briefing Form", icon: "fa-file-signature" },
+  { key: "appraisal_report_file", label: "Appraisal Report", icon: "fa-file-alt" },
+  { key: "other_documents_file", label: "Other Documents", icon: "fa-paperclip" },
+  { key: "remark_file", label: "Remarks Document", icon: "fa-file-lines" },
+];
+
+const SIGNOFF_DOC_FORM_LABELS = [
+  { key: "sign_off_confirmation_email_file", label: "Sign Off Confirmation Email — Agent / On-board Master" },
+  { key: "flight_ticket_file", label: "Flight Ticket — Sign Off Port to Home/Country" },
+  { key: "exit_visa_file", label: "Exit Visa — if available" },
+  { key: "seaman_book_stamp_file", label: "Seaman Book Stamp — Sign On / Sign Off Date" },
+  { key: "dg_sign_off_record_ind_form1_file", label: "DG Sign Off Record (IND) — FORM 1" },
+  { key: "debriefing_form_file", label: "DE-Briefing Form — Company / RPSL" },
+  { key: "appraisal_report_file", label: "Appraisal Report — Employer / Owner / RPSL" },
+  { key: "other_documents_file", label: "Other Documents" },
+];
+
+function emptyPostSignOffFilesState() {
+  return Object.fromEntries(SIGNOFF_DOC_FIELDS.map(({ key }) => [key, null]));
+}
+
+function emptyPostSignOffFileFormKeys() {
+  return Object.fromEntries(SIGNOFF_DOC_FIELDS.map(({ key }) => [key, ""]));
+}
+
+/** Sign-on row upload columns — same storage/URL pattern as Sign-Off / Proposal. */
+const SIGNON_RECORD_DOC_FIELDS = [
+  { key: "rpsl_contract_sea_file", label: "RPSL Contract/SEA", icon: "fa-file-contract" },
+  { key: "owner_principal_sea_file", label: "Owner/Principal SEA", icon: "fa-file-lines" },
+  { key: "owner_principal_terms_cos_file", label: "Owner/Principal Terms - COS", icon: "fa-file-signature" },
+  { key: "flight_ticket_joining_file", label: "Flight Ticket Joining", icon: "fa-plane" },
+  { key: "letter_of_guarantee_oktb_file", label: "Letter of Guarantee/OKTB", icon: "fa-envelope" },
+  { key: "company_guarantee_letter_file", label: "Company Guarantee Letter", icon: "fa-building" },
+  { key: "dg_emigration_form1_file", label: "DG Emigration Form 1", icon: "fa-file-alt" },
+  { key: "dg_sign_on_record_form1_file", label: "DG Sign On Record Form 1", icon: "fa-file-lines" },
+  { key: "joining_confirmation_proof_email_file", label: "Joining Confirmation Proof/Email", icon: "fa-envelope-open-text" },
+  { key: "seaman_book_stamp_signon_file", label: "Seaman Book Stamp (SignOnStamp)", icon: "fa-book" },
+];
+
+const SIGNON_RECORD_DOC_FORM_LABELS = [
+  { key: "rpsl_contract_sea_file", label: "RPSL Contract/SEA" },
+  { key: "owner_principal_sea_file", label: "Owner/Principal SEA" },
+  { key: "owner_principal_terms_cos_file", label: "Owner/Principal Terms - COS" },
+  { key: "flight_ticket_joining_file", label: "Flight Ticket Joining" },
+  { key: "letter_of_guarantee_oktb_file", label: "Letter of Guarantee/OKTB (Agent/Employer)" },
+  { key: "company_guarantee_letter_file", label: "Company Guarantee Letter (Manning/RPSL)" },
+  { key: "dg_emigration_form1_file", label: "DG Emigration Form 1" },
+  { key: "dg_sign_on_record_form1_file", label: "DG Sign On Record Form 1" },
+  { key: "joining_confirmation_proof_email_file", label: "Joining Confirmation Proof/Email" },
+  { key: "seaman_book_stamp_signon_file", label: "Seaman Book Stamp (SignOnStamp)" },
+];
+
+function emptyPostSignOnRecordFilesState() {
+  return Object.fromEntries(SIGNON_RECORD_DOC_FIELDS.map(({ key }) => [key, null]));
+}
+
+function emptyPostSignOnRecordFileFormKeys() {
+  return Object.fromEntries(SIGNON_RECORD_DOC_FIELDS.map(({ key }) => [key, ""]));
+}
+
 /** @param {unknown} url */
 function fileExtensionOf(url) {
   const clean = String(url || "").split(/[?#]/)[0];
@@ -237,6 +304,30 @@ function visaDocumentsFor(row, candidateId) {
     }
   }
   return docs;
+}
+
+/** Uploaded sign-on record documents for a row, resolved to absolute URLs. */
+function signOnRecordDocumentsFor(row, candidateId) {
+  return SIGNON_RECORD_DOC_FIELDS.filter(({ key }) => row?.[key]).map(({ key, label, icon }) => {
+    const raw = String(row[key]);
+    const fileName = raw.replace(/^\/+/, "").split("/").pop();
+    const url = raw.startsWith("http")
+      ? raw
+      : `${import.meta.env.VITE_API_URL || ""}/uploads/documents/${candidateId}/${fileName}`;
+    return { key, label, icon, fileName, url, ext: fileExtensionOf(fileName) };
+  });
+}
+
+/** Uploaded sign-off documents for a row, resolved to absolute URLs. */
+function signOffDocumentsFor(row, candidateId) {
+  return SIGNOFF_DOC_FIELDS.filter(({ key }) => row?.[key]).map(({ key, label, icon }) => {
+    const raw = String(row[key]);
+    const fileName = raw.replace(/^\/+/, "").split("/").pop();
+    const url = raw.startsWith("http")
+      ? raw
+      : `${import.meta.env.VITE_API_URL || ""}/uploads/documents/${candidateId}/${fileName}`;
+    return { key, label, icon, fileName, url, ext: fileExtensionOf(fileName) };
+  });
 }
 
 /** Uploaded proposal documents for a row, resolved to absolute URLs. */
@@ -674,6 +765,8 @@ const CandidateDetails = () => {
   const [postSignOnRecordFiles, setPostSignOnRecordFiles] = useState(emptySignOnPendingFiles);
   const [postSignOnRecordDocs, setPostSignOnRecordDocs] = useState([]);
   const [postSignOnRecordDocsLoading, setPostSignOnRecordDocsLoading] = useState(false);
+  const [postSignOnRecordUploadFiles, setPostSignOnRecordUploadFiles] = useState(emptyPostSignOnRecordFilesState);
+  const [signOnRecordDocViewer, setSignOnRecordDocViewer] = useState({ open: false, row: null, docs: [], selected: null });
 
   // Sign-on record editing (post-sign-on documents rows: postsignon_docs)
   const [showPostSignOnRecordModal, setShowPostSignOnRecordModal] = useState(false);
@@ -688,6 +781,7 @@ const CandidateDetails = () => {
     country_id: "",
     sign_off_due: "",
     remark: "",
+    ...emptyPostSignOnRecordFileFormKeys(),
   });
   const [postSignOnRecordSaving, setPostSignOnRecordSaving] = useState(false);
   /** Master list from GET /api/vessels for sign-on vessel dropdown. */
@@ -708,8 +802,11 @@ const CandidateDetails = () => {
     contract_completion_date: "",
     sign_off_reason: "",
     remark: "",
+    ...emptyPostSignOffFileFormKeys(),
   });
+  const [postSignOffFiles, setPostSignOffFiles] = useState(emptyPostSignOffFilesState);
   const [postSignOffRecordSaving, setPostSignOffRecordSaving] = useState(false);
+  const [signOffDocViewer, setSignOffDocViewer] = useState({ open: false, row: null, docs: [], selected: null });
   const [flagStateCrewDocuments, setFlagStateCrewDocuments] = useState([]);
   const [countries, setCountries] = useState([]);
   const [documentTypes, setDocumentTypes] = useState([]);
@@ -782,6 +879,29 @@ const CandidateDetails = () => {
     a.click();
     a.remove();
   };
+
+  const openSignOffDocViewer = (row) => {
+    const docs = signOffDocumentsFor(row, id);
+    if (!docs.length) return;
+    setSignOffDocViewer({ open: true, row, docs, selected: docs.length === 1 ? docs[0] : null });
+  };
+
+  const closeSignOffDocViewer = () =>
+    setSignOffDocViewer({ open: false, row: null, docs: [], selected: null });
+
+  const downloadSignOffDoc = (doc) => downloadProposalDoc(doc);
+
+  const openSignOnRecordDocViewer = (row) => {
+    const docs = signOnRecordDocumentsFor(row, id);
+    if (!docs.length) return;
+    setSignOnRecordDocViewer({ open: true, row, docs, selected: docs.length === 1 ? docs[0] : null });
+  };
+
+  const closeSignOnRecordDocViewer = () =>
+    setSignOnRecordDocViewer({ open: false, row: null, docs: [], selected: null });
+
+  const downloadSignOnRecordDoc = (doc) => downloadProposalDoc(doc);
+
   const [tabPaging, setTabPaging] = useState({
     record_of_sea_services: { page: 1, pageSize: 10 },
     planings: { page: 1, pageSize: 10 },
@@ -2196,9 +2316,11 @@ const CandidateDetails = () => {
       country_id: "",
       sign_off_due: "",
       remark: "",
+      ...emptyPostSignOnRecordFileFormKeys(),
     });
     setPostSignOnRecordFiles(emptySignOnPendingFiles());
     setPostSignOnRecordDocs([]);
+    setPostSignOnRecordUploadFiles(emptyPostSignOnRecordFilesState());
     setShowPostSignOnRecordModal(true);
   };
 
@@ -2207,6 +2329,7 @@ const CandidateDetails = () => {
     setPostSignOnRecordEditingId(null);
     setPostSignOnRecordFiles(emptySignOnPendingFiles());
     setPostSignOnRecordDocs([]);
+    setPostSignOnRecordUploadFiles(emptyPostSignOnRecordFilesState());
   };
 
   const openEditPostSignOnRecordModal = (row) => {
@@ -2228,10 +2351,13 @@ const CandidateDetails = () => {
       country_id: row?.country_id != null ? String(row.country_id) : "",
       sign_off_due: toDateInputValue(row?.sign_off_due),
       remark: row?.remark ?? "",
+      ...Object.fromEntries(
+        SIGNON_RECORD_DOC_FIELDS.map(({ key }) => [key, row?.[key] ? String(row[key]) : ""]),
+      ),
     });
     setPostSignOnRecordFiles(emptySignOnPendingFiles());
     setPostSignOnRecordDocs([]);
-    if (row?.id != null) loadPostSignOnRecordDocs(row.id);
+    setPostSignOnRecordUploadFiles(emptyPostSignOnRecordFilesState());
     setShowPostSignOnRecordModal(true);
   };
 
@@ -2243,23 +2369,34 @@ const CandidateDetails = () => {
       alert("Only admins can edit sign-on records.");
       return;
     }
+    const selectedUploads = Object.values(postSignOnRecordUploadFiles).filter(Boolean);
+    if (exceedsRequestLimit(selectedUploads)) {
+      alert(`These documents add up to more than ${MAX_REQUEST_UPLOAD_MB} MB. Upload them in smaller batches.`);
+      return;
+    }
+
     setPostSignOnRecordSaving(true);
     try {
       const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
-      const payload = {
-        vessel_name: postSignOnRecordForm.vessel_name,
-        imo_number: postSignOnRecordForm.imo_number,
-        sign_on_rank:
-          postSignOnRecordForm.sign_on_rank !== "" && postSignOnRecordForm.sign_on_rank != null
-            ? Number(postSignOnRecordForm.sign_on_rank)
-            : postSignOnRecordForm.sign_on_rank,
-        contract_start_date: postSignOnRecordForm.contract_start_date,
-        sign_on_date: postSignOnRecordForm.sign_on_date,
-        sign_on_port: postSignOnRecordForm.sign_on_port,
-        country_id: postSignOnRecordForm.country_id,
-        sign_off_due: postSignOnRecordForm.sign_off_due,
-        remark: postSignOnRecordForm.remark,
-      };
+      const fd = new FormData();
+      fd.append("vessel_name", postSignOnRecordForm.vessel_name ?? "");
+      fd.append("imo_number", postSignOnRecordForm.imo_number ?? "");
+      fd.append(
+        "sign_on_rank",
+        postSignOnRecordForm.sign_on_rank !== "" && postSignOnRecordForm.sign_on_rank != null
+          ? String(postSignOnRecordForm.sign_on_rank)
+          : "",
+      );
+      fd.append("contract_start_date", postSignOnRecordForm.contract_start_date ?? "");
+      fd.append("sign_on_date", postSignOnRecordForm.sign_on_date ?? "");
+      fd.append("sign_on_port", postSignOnRecordForm.sign_on_port ?? "");
+      fd.append("country_id", postSignOnRecordForm.country_id ?? "");
+      fd.append("sign_off_due", postSignOnRecordForm.sign_off_due ?? "");
+      fd.append("remark", postSignOnRecordForm.remark ?? "");
+      Object.entries(postSignOnRecordUploadFiles).forEach(([k, file]) => {
+        if (file) fd.append(k, file);
+      });
+
       const endpoint = isEdit
         ? `${apiBase}/api/candidates/${id}/post-sign-on-documents/${postSignOnRecordEditingId}`
         : `${apiBase}/api/candidates/${id}/post-sign-on-documents`;
@@ -2267,8 +2404,8 @@ const CandidateDetails = () => {
       const method = isEdit ? "PUT" : "POST";
       const res = await fetch(endpoint, {
         method,
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify(payload),
+        headers: { ...authHeaders() },
+        body: fd,
       });
 
       if (!res.ok) {
@@ -2279,25 +2416,8 @@ const CandidateDetails = () => {
       const saved = await res.json().catch(() => ({}));
       applyStatusSyncFromResponse(saved);
 
-      const signonId = isEdit ? postSignOnRecordEditingId : saved.id;
-      const failures = [];
-      if (signonId != null) {
-        for (const [categoryKey, files] of Object.entries(postSignOnRecordFiles)) {
-          for (const file of files || []) {
-            try {
-              await uploadSignOnDocument(signonId, categoryKey, file);
-            } catch (uploadErr) {
-              failures.push(`${signOnCategoryLabel(categoryKey)} – ${file.name}: ${uploadErr?.message || "Upload failed"}`);
-            }
-          }
-        }
-      }
-
       closePostSignOnRecordModal();
       await fetchCandidateData();
-      if (failures.length) {
-        alert(`Sign-on record saved, but some documents were not uploaded:\n\n${failures.join("\n")}\n\nYou can add them from the Documents action.`);
-      }
     } catch (err) {
       alert(err?.message || "Failed to save sign-on record");
     } finally {
@@ -2399,7 +2519,9 @@ const CandidateDetails = () => {
       contract_completion_date: toDateInputValue(lastSignOn?.sign_off_due),
       sign_off_reason: "",
       remark: "",
+      ...emptyPostSignOffFileFormKeys(),
     });
+    setPostSignOffFiles(emptyPostSignOffFilesState());
     setShowPostSignOffRecordModal(true);
   };
 
@@ -2424,7 +2546,11 @@ const CandidateDetails = () => {
       contract_completion_date: toDateInputValue(row?.contract_completion_date),
       sign_off_reason: row?.sign_off_reason ?? "",
       remark: row?.remark ?? "",
+      ...Object.fromEntries(
+        SIGNOFF_DOC_FIELDS.map(({ key }) => [key, row?.[key] ? String(row[key]) : ""]),
+      ),
     });
+    setPostSignOffFiles(emptyPostSignOffFilesState());
     setShowPostSignOffRecordModal(true);
   };
 
@@ -2442,25 +2568,35 @@ const CandidateDetails = () => {
       );
       return;
     }
+    const selectedFiles = Object.values(postSignOffFiles).filter(Boolean);
+    if (exceedsRequestLimit(selectedFiles)) {
+      alert(`These documents add up to more than ${MAX_REQUEST_UPLOAD_MB} MB. Upload them in smaller batches.`);
+      return;
+    }
+
     setPostSignOffRecordSaving(true);
     try {
       const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
-      const payload = {
-        vessel_name: postSignOffRecordForm.vessel_name,
-        imo_number: postSignOffRecordForm.imo_number,
-        sign_off_rank:
-          postSignOffRecordForm.sign_off_rank !== "" && postSignOffRecordForm.sign_off_rank != null
-            ? Number(postSignOffRecordForm.sign_off_rank)
-            : postSignOffRecordForm.sign_off_rank,
-        sign_on_date: postSignOffRecordForm.sign_on_date,
-        sign_off_date: postSignOffRecordForm.sign_off_date,
-        sign_off_port: postSignOffRecordForm.sign_off_port,
-        country_id: postSignOffRecordForm.country_id,
-        arrival_date: postSignOffRecordForm.arrival_date,
-        contract_completion_date: postSignOffRecordForm.contract_completion_date,
-        sign_off_reason: postSignOffRecordForm.sign_off_reason,
-        remark: postSignOffRecordForm.remark,
-      };
+      const fd = new FormData();
+      fd.append("vessel_name", postSignOffRecordForm.vessel_name ?? "");
+      fd.append("imo_number", postSignOffRecordForm.imo_number ?? "");
+      fd.append(
+        "sign_off_rank",
+        postSignOffRecordForm.sign_off_rank !== "" && postSignOffRecordForm.sign_off_rank != null
+          ? String(postSignOffRecordForm.sign_off_rank)
+          : "",
+      );
+      fd.append("sign_on_date", postSignOffRecordForm.sign_on_date ?? "");
+      fd.append("sign_off_date", postSignOffRecordForm.sign_off_date ?? "");
+      fd.append("sign_off_port", postSignOffRecordForm.sign_off_port ?? "");
+      fd.append("country_id", postSignOffRecordForm.country_id ?? "");
+      fd.append("arrival_date", postSignOffRecordForm.arrival_date ?? "");
+      fd.append("contract_completion_date", postSignOffRecordForm.contract_completion_date ?? "");
+      fd.append("sign_off_reason", postSignOffRecordForm.sign_off_reason ?? "");
+      fd.append("remark", postSignOffRecordForm.remark ?? "");
+      Object.entries(postSignOffFiles).forEach(([k, file]) => {
+        if (file) fd.append(k, file);
+      });
 
       const endpoint = isEdit
         ? `${apiBase}/api/candidates/${id}/post-sign-off-documents/${postSignOffRecordEditingId}`
@@ -2469,8 +2605,8 @@ const CandidateDetails = () => {
       const method = isEdit ? "PUT" : "POST";
       const res = await fetch(endpoint, {
         method,
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify(payload),
+        headers: { ...authHeaders() },
+        body: fd,
       });
 
       if (!res.ok) {
@@ -3898,11 +4034,14 @@ const CandidateDetails = () => {
                       <th>Sign Off Due Date</th>
                       <th>Period</th>
                       <th>Remark</th>
+                      <th>Documents</th>
                       <th>Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {signOnPage.rows.map((row) => (
+                    {signOnPage.rows.map((row) => {
+                      const rowRecordDocs = signOnRecordDocumentsFor(row, id);
+                      return (
                       <tr key={row.id}>
                         <td>{row.vessel_name ?? "-"}</td>
                         <td>{row.imo_number ?? "-"}</td>
@@ -3933,19 +4072,34 @@ const CandidateDetails = () => {
                             {row.remark ? String(row.remark).slice(0, 30) + (String(row.remark).length > 30 ? "..." : "") : "-"}
                           </span>
                         </td>
+                        <td>
+                          {rowRecordDocs.length ? (
+                            <button
+                              type="button"
+                              className="doc-view-trigger"
+                              onClick={() => openSignOnRecordDocViewer(row)}
+                              title={`View ${rowRecordDocs.length} document${rowRecordDocs.length > 1 ? "s" : ""}`}
+                            >
+                              <i className="fas fa-folder-open" aria-hidden="true" />
+                              View
+                              <span className="doc-view-count">{rowRecordDocs.length}</span>
+                            </button>
+                          ) : "-"}
+                        </td>
                         <td className="action-cell-with-audit">
                           <ActionToolbar record={row}>
                             {isAdmin && (
                               <button type="button" className="action-icon-btn action-icon-edit" title="Edit" onClick={() => openEditPostSignOnRecordModal(row)}><i className="fas fa-pen" /></button>
                             )}
-                            <button type="button" className="action-icon-btn action-icon-docs" title="Documents" onClick={() => openSignOnDocModal(row.id)}><i className="fas fa-file-alt" /></button>
+                            <button type="button" className="action-icon-btn action-icon-docs" title="Legacy sign-on document files" onClick={() => openSignOnDocModal(row.id)}><i className="fas fa-file-alt" /></button>
                             {isAdmin && (
                               <button type="button" className="action-icon-btn action-icon-delete" title="Delete" onClick={() => handleDeletePostSignOnRecord(row.id)}><i className="fas fa-trash" /></button>
                             )}
                           </ActionToolbar>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -4013,11 +4167,14 @@ const CandidateDetails = () => {
                       <th>Contract Completion Date</th>
                       <th>Sign Off Reason</th>
                       <th>Remark</th>
+                      <th>Documents</th>
                       <th>Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {signOffPage.rows.map((row) => (
+                    {signOffPage.rows.map((row) => {
+                      const rowDocs = signOffDocumentsFor(row, id);
+                      return (
                       <tr key={row.id}>
                         <td>{row.vessel_name ?? "-"}</td>
                         <td>{row.imo_number ?? "-"}</td>
@@ -4049,6 +4206,20 @@ const CandidateDetails = () => {
                             {row.remark ? String(row.remark).slice(0, 30) + (String(row.remark).length > 30 ? "..." : "") : "-"}
                           </span>
                         </td>
+                        <td>
+                          {rowDocs.length ? (
+                            <button
+                              type="button"
+                              className="doc-view-trigger"
+                              onClick={() => openSignOffDocViewer(row)}
+                              title={`View ${rowDocs.length} document${rowDocs.length > 1 ? "s" : ""}`}
+                            >
+                              <i className="fas fa-folder-open" aria-hidden="true" />
+                              View
+                              <span className="doc-view-count">{rowDocs.length}</span>
+                            </button>
+                          ) : "-"}
+                        </td>
                         <td className="action-cell-with-audit">
                           <ActionToolbar record={row}>
                             {isAdmin ? (
@@ -4062,7 +4233,8 @@ const CandidateDetails = () => {
                           </ActionToolbar>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -4442,6 +4614,190 @@ const CandidateDetails = () => {
                   Download
                 </button>
                 <button type="button" className="btn btn-sm btn-secondary" onClick={closeProposalDocViewer}>
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {signOnRecordDocViewer.open && (
+        <div className="modal-overlay" onClick={closeSignOnRecordDocViewer}>
+          <div className="modal-content modal-lg doc-viewer-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>
+                Sign-On Documents
+                {signOnRecordDocViewer.row?.vessel_name ? ` · ${signOnRecordDocViewer.row.vessel_name}` : ""}
+              </h3>
+              <button type="button" className="close-btn" onClick={closeSignOnRecordDocViewer} aria-label="Close">&times;</button>
+            </div>
+
+            <div className="doc-viewer-body">
+              <div className="doc-viewer-list" role="listbox" aria-label="Documents">
+                <div className="doc-viewer-list-title">
+                  {signOnRecordDocViewer.docs.length} document{signOnRecordDocViewer.docs.length > 1 ? "s" : ""}
+                </div>
+                {signOnRecordDocViewer.docs.map((doc) => (
+                  <button
+                    key={doc.key}
+                    type="button"
+                    role="option"
+                    aria-selected={signOnRecordDocViewer.selected?.key === doc.key}
+                    className={`doc-viewer-item${signOnRecordDocViewer.selected?.key === doc.key ? " is-active" : ""}`}
+                    onClick={() => setSignOnRecordDocViewer((prev) => ({ ...prev, selected: doc }))}
+                  >
+                    <i className={`fas ${doc.icon} doc-viewer-item-icon`} aria-hidden="true" />
+                    <span className="doc-viewer-item-text">
+                      <span className="doc-viewer-item-label">{doc.label}</span>
+                      <span className="doc-viewer-item-meta">{doc.ext ? doc.ext.toUpperCase() : "FILE"}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="doc-viewer-stage">
+                {!signOnRecordDocViewer.selected ? (
+                  <div className="doc-viewer-empty">
+                    <i className="fas fa-file-circle-question" aria-hidden="true" />
+                    <p>Select a document to preview</p>
+                  </div>
+                ) : PREVIEWABLE_IMAGE_EXTS.includes(signOnRecordDocViewer.selected.ext) ? (
+                  <div className="doc-viewer-frame doc-viewer-frame--image">
+                    <img src={signOnRecordDocViewer.selected.url} alt={signOnRecordDocViewer.selected.label} />
+                  </div>
+                ) : signOnRecordDocViewer.selected.ext === "pdf" ? (
+                  <div className="doc-viewer-frame">
+                    <iframe
+                      src={`${signOnRecordDocViewer.selected.url}#toolbar=1`}
+                      title={signOnRecordDocViewer.selected.label}
+                    />
+                  </div>
+                ) : (
+                  <div className="doc-viewer-empty">
+                    <i className="fas fa-file-arrow-down" aria-hidden="true" />
+                    <p>
+                      Preview is not available for
+                      {signOnRecordDocViewer.selected.ext ? ` .${signOnRecordDocViewer.selected.ext}` : " this"} files
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      onClick={() => downloadSignOnRecordDoc(signOnRecordDocViewer.selected)}
+                    >
+                      Download to view
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="modal-footer doc-viewer-footer">
+              <span className="doc-viewer-filename" title={signOnRecordDocViewer.selected?.fileName || ""}>
+                {signOnRecordDocViewer.selected?.fileName || ""}
+              </span>
+              <div className="doc-viewer-footer-actions">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline-info"
+                  disabled={!signOnRecordDocViewer.selected}
+                  onClick={() => downloadSignOnRecordDoc(signOnRecordDocViewer.selected)}
+                >
+                  Download
+                </button>
+                <button type="button" className="btn btn-sm btn-secondary" onClick={closeSignOnRecordDocViewer}>
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {signOffDocViewer.open && (
+        <div className="modal-overlay" onClick={closeSignOffDocViewer}>
+          <div className="modal-content modal-lg doc-viewer-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>
+                Sign-Off Documents
+                {signOffDocViewer.row?.vessel_name ? ` · ${signOffDocViewer.row.vessel_name}` : ""}
+              </h3>
+              <button type="button" className="close-btn" onClick={closeSignOffDocViewer} aria-label="Close">&times;</button>
+            </div>
+
+            <div className="doc-viewer-body">
+              <div className="doc-viewer-list" role="listbox" aria-label="Documents">
+                <div className="doc-viewer-list-title">
+                  {signOffDocViewer.docs.length} document{signOffDocViewer.docs.length > 1 ? "s" : ""}
+                </div>
+                {signOffDocViewer.docs.map((doc) => (
+                  <button
+                    key={doc.key}
+                    type="button"
+                    role="option"
+                    aria-selected={signOffDocViewer.selected?.key === doc.key}
+                    className={`doc-viewer-item${signOffDocViewer.selected?.key === doc.key ? " is-active" : ""}`}
+                    onClick={() => setSignOffDocViewer((prev) => ({ ...prev, selected: doc }))}
+                  >
+                    <i className={`fas ${doc.icon} doc-viewer-item-icon`} aria-hidden="true" />
+                    <span className="doc-viewer-item-text">
+                      <span className="doc-viewer-item-label">{doc.label}</span>
+                      <span className="doc-viewer-item-meta">{doc.ext ? doc.ext.toUpperCase() : "FILE"}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="doc-viewer-stage">
+                {!signOffDocViewer.selected ? (
+                  <div className="doc-viewer-empty">
+                    <i className="fas fa-file-circle-question" aria-hidden="true" />
+                    <p>Select a document to preview</p>
+                  </div>
+                ) : PREVIEWABLE_IMAGE_EXTS.includes(signOffDocViewer.selected.ext) ? (
+                  <div className="doc-viewer-frame doc-viewer-frame--image">
+                    <img src={signOffDocViewer.selected.url} alt={signOffDocViewer.selected.label} />
+                  </div>
+                ) : signOffDocViewer.selected.ext === "pdf" ? (
+                  <div className="doc-viewer-frame">
+                    <iframe
+                      src={`${signOffDocViewer.selected.url}#toolbar=1`}
+                      title={signOffDocViewer.selected.label}
+                    />
+                  </div>
+                ) : (
+                  <div className="doc-viewer-empty">
+                    <i className="fas fa-file-arrow-down" aria-hidden="true" />
+                    <p>
+                      Preview is not available for
+                      {signOffDocViewer.selected.ext ? ` .${signOffDocViewer.selected.ext}` : " this"} files
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      onClick={() => downloadSignOffDoc(signOffDocViewer.selected)}
+                    >
+                      Download to view
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="modal-footer doc-viewer-footer">
+              <span className="doc-viewer-filename" title={signOffDocViewer.selected?.fileName || ""}>
+                {signOffDocViewer.selected?.fileName || ""}
+              </span>
+              <div className="doc-viewer-footer-actions">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline-info"
+                  disabled={!signOffDocViewer.selected}
+                  onClick={() => downloadSignOffDoc(signOffDocViewer.selected)}
+                >
+                  Download
+                </button>
+                <button type="button" className="btn btn-sm btn-secondary" onClick={closeSignOffDocViewer}>
                   Close
                 </button>
               </div>
@@ -5367,19 +5723,36 @@ const CandidateDetails = () => {
 
                   <div className="form-group full-width">
                     <label>Document Uploads (max 20 MB each)</label>
-                    <SignOnDocumentsGrid
-                      documents={postSignOnRecordDocs}
-                      loading={postSignOnRecordDocsLoading}
-                      pending={postSignOnRecordFiles}
-                      onAddFile={stagePostSignOnRecordFile}
-                      onRemovePending={unstagePostSignOnRecordFile}
-                      onDelete={postSignOnRecordEditingId != null ? deletePostSignOnRecordDoc : undefined}
-                      onReplace={postSignOnRecordEditingId != null ? replacePostSignOnRecordDoc : undefined}
-                      disabled={postSignOnRecordSaving}
-                    />
-                    <span className="text-muted small">
-                      Selected files are uploaded when you click {postSignOnRecordEditingId != null ? "Update" : "Add"}.
-                    </span>
+                    <div className="proposal-upload-grid">
+                      {SIGNON_RECORD_DOC_FORM_LABELS.map(({ key, label }) => {
+                        const existing = postSignOnRecordForm[key];
+                        const selected = postSignOnRecordUploadFiles[key];
+                        const href = existing
+                          ? (String(existing).startsWith("http")
+                            ? existing
+                            : `${import.meta.env.VITE_API_URL || ""}/uploads/documents/${id}/${String(existing).replace(/^\/+/, "").split("/").pop()}`)
+                          : null;
+                        return (
+                          <div key={key} className="proposal-upload-item">
+                            <div className="proposal-upload-label">{label}</div>
+                            <input
+                              type="file"
+                              className="form-control"
+                              accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx,.eml,.msg"
+                              onChange={(e) => {
+                                const file = pickDocumentFile(e);
+                                setPostSignOnRecordUploadFiles((prev) => ({ ...prev, [key]: file }));
+                              }}
+                            />
+                            {selected ? (
+                              <span className="text-muted small">{selected.name} (selected)</span>
+                            ) : href ? (
+                              <a href={href} target="_blank" rel="noopener noreferrer" className="view-file-btn">View current</a>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
 
                   <div className="form-actions full-width">
@@ -5436,8 +5809,8 @@ const CandidateDetails = () => {
                 </button>
               </div>
 
-              <div className="modal-body modal-form-row">
-                <form onSubmit={submitPostSignOffRecord} className="modal-body modal-form-row p-0">
+              <div className="modal-body">
+                <form onSubmit={submitPostSignOffRecord} className="modal-body modal-form-row signon-record-form p-0">
                   <div className="form-group">
                     <label>Vessel</label>
                     <select
@@ -5606,7 +5979,41 @@ const CandidateDetails = () => {
                   </div>
 
                   <div className="form-group full-width">
-                    <label>Remark</label>
+                    <label>Document Uploads (max 20 MB each)</label>
+                    <div className="proposal-upload-grid">
+                      {SIGNOFF_DOC_FORM_LABELS.map(({ key, label }) => {
+                        const existing = postSignOffRecordForm[key];
+                        const selected = postSignOffFiles[key];
+                        const href = existing
+                          ? (String(existing).startsWith("http")
+                            ? existing
+                            : `${import.meta.env.VITE_API_URL || ""}/uploads/documents/${id}/${String(existing).replace(/^\/+/, "").split("/").pop()}`)
+                          : null;
+                        return (
+                          <div key={key} className="proposal-upload-item">
+                            <div className="proposal-upload-label">{label}</div>
+                            <input
+                              type="file"
+                              className="form-control"
+                              accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx,.eml,.msg"
+                              onChange={(e) => {
+                                const file = pickDocumentFile(e);
+                                setPostSignOffFiles((prev) => ({ ...prev, [key]: file }));
+                              }}
+                            />
+                            {selected ? (
+                              <span className="text-muted small">{selected.name} (selected)</span>
+                            ) : href ? (
+                              <a href={href} target="_blank" rel="noopener noreferrer" className="view-file-btn">View current</a>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="form-group full-width">
+                    <label>Remarks</label>
                     <textarea
                       name="remark"
                       className="form-control"
@@ -5614,6 +6021,37 @@ const CandidateDetails = () => {
                       onChange={handlePostSignOffRecordInputChange}
                       rows={2}
                     />
+                  </div>
+
+                  <div className="form-group full-width">
+                    <label>Remarks Document</label>
+                    <div className="proposal-upload-item" style={{ maxWidth: "100%" }}>
+                      <input
+                        type="file"
+                        className="form-control"
+                        accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.doc,.docx,.eml,.msg"
+                        onChange={(e) => {
+                          const file = pickDocumentFile(e);
+                          setPostSignOffFiles((prev) => ({ ...prev, remark_file: file }));
+                        }}
+                      />
+                      {postSignOffFiles.remark_file ? (
+                        <span className="text-muted small">{postSignOffFiles.remark_file.name} (selected)</span>
+                      ) : postSignOffRecordForm.remark_file ? (
+                        <a
+                          href={
+                            String(postSignOffRecordForm.remark_file).startsWith("http")
+                              ? postSignOffRecordForm.remark_file
+                              : `${import.meta.env.VITE_API_URL || ""}/uploads/documents/${id}/${String(postSignOffRecordForm.remark_file).replace(/^\/+/, "").split("/").pop()}`
+                          }
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="view-file-btn"
+                        >
+                          View current
+                        </a>
+                      ) : null}
+                    </div>
                   </div>
 
                   <div className="form-actions full-width">
