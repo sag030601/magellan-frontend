@@ -1519,6 +1519,142 @@
   margin-top: 4px;
   flex-wrap: wrap;
   gap: 8px;
+  justify-content: flex-end;
+}
+
+/*
+ * Sign-On / Sign-Off record modals: Bootstrap .modal-content is inside
+ * .candidate-details-container, which otherwise caps .modal-content at 600px
+ * (see .candidate-details-container .modal-content above). Proposal avoids
+ * that by using modal-content.modal-lg on the overlay modal; these dialogs need
+ * an explicit wide dialog + content override.
+ */
+.candidate-details-container .modal-dialog.post-sign-record-modal {
+  width: min(92vw, 980px);
+  max-width: 980px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.candidate-details-container .modal-dialog.post-sign-record-modal > .modal-content {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* Landscape crew forms: Proposal / Sign-On / Sign-Off (Add & Edit) */
+.modal-body.modal-form-row.modal-form-landscape,
+.modal-form-row.signon-record-form.modal-form-landscape {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  column-gap: 12px;
+  row-gap: 10px;
+  align-items: start;
+  overflow-x: hidden;
+}
+
+.candidate-details-container .modal-content .modal-body .signon-record-form.modal-form-landscape {
+  padding: 0;
+}
+
+.modal-form-landscape .form-group {
+  min-width: 0;
+  margin-bottom: 0;
+  gap: 4px;
+}
+
+.modal-form-landscape .form-group label {
+  line-height: 1.25;
+}
+
+.modal-form-landscape .form-group .form-control,
+.modal-form-landscape .form-group select.form-control,
+.modal-form-landscape .form-group textarea.form-control {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.modal-form-landscape .form-group.col-span-2 {
+  grid-column: span 2;
+}
+
+.modal-form-landscape .form-group.col-span-3 {
+  grid-column: span 3;
+}
+
+.modal-form-landscape .form-group.full-width {
+  grid-column: 1 / -1;
+}
+
+.modal-form-landscape .landscape-period-cell {
+  background: var(--bg-secondary);
+  min-height: auto;
+  height: auto;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.modal-form-landscape .proposal-upload-grid.landscape-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  column-gap: 12px;
+  row-gap: 10px;
+  margin-top: 4px;
+}
+
+.modal-form-landscape .landscape-upload-grid .proposal-upload-item {
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.modal-form-landscape .landscape-upload-grid .form-control[type="file"] {
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+@media (max-width: 991px) {
+  .modal-body.modal-form-row.modal-form-landscape,
+  .modal-form-row.signon-record-form.modal-form-landscape {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .modal-form-landscape .proposal-upload-grid.landscape-upload-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .modal-body.modal-form-row.modal-form-landscape,
+  .modal-form-row.signon-record-form.modal-form-landscape {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .modal-form-landscape .form-group.col-span-3 {
+    grid-column: 1 / -1;
+  }
+
+  .modal-form-landscape .proposal-upload-grid.landscape-upload-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  .modal-body.modal-form-row.modal-form-landscape,
+  .modal-form-row.signon-record-form.modal-form-landscape {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-form-landscape .form-group.col-span-2,
+  .modal-form-landscape .form-group.col-span-3 {
+    grid-column: 1 / -1;
+  }
+
+  .modal-form-landscape .proposal-upload-grid.landscape-upload-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── Table Responsive ────────────────────────────────────────────────────── */

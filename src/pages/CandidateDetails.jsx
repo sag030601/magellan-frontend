@@ -4884,7 +4884,11 @@ const CandidateDetails = () => {
               }</h3>
               <button className="close-btn" onClick={closeGenericModal}>&times;</button>
             </div>
-            <div className="modal-body modal-form-row">
+            <div
+              className={`modal-body modal-form-row${
+                genericModal.type === "proposal" ? " modal-form-landscape" : ""
+              }`}
+            >
               {genericModal.type === "services" && (<>
                 <div className="form-group">
                   <label>Rank</label>
@@ -5164,7 +5168,7 @@ const CandidateDetails = () => {
                   <label>Tentative Joining Schedule</label>
                   <input type="date" className="form-control" value={genericModal.form.tentative_joining_schedule} onChange={(e) => handleGenericFormChange("tentative_joining_schedule", e.target.value)} />
                 </div>
-                <div className="form-group" style={{ gridColumn: "1 / -1" }}>
+                <div className="form-group full-width">
                   <label>Remarks</label>
                   <textarea
                     className="form-control"
@@ -5173,9 +5177,9 @@ const CandidateDetails = () => {
                     onChange={(e) => handleGenericFormChange("remarks", e.target.value)}
                   />
                 </div>
-                <div className="form-group" style={{ gridColumn: "1 / -1" }}>
+                <div className="form-group full-width">
                   <label>Document Uploads (max 20 MB each)</label>
-                  <div className="proposal-upload-grid">
+                  <div className="proposal-upload-grid landscape-upload-grid">
                     {[
                       { key: "cv_package_file", label: "CV Package (Aramco)" },
                       { key: "proposal_email_file", label: "Proposal Email File" },
@@ -5532,7 +5536,7 @@ const CandidateDetails = () => {
       {/* Sign On Record modal: add/edit postsignon_docs rows */}
       {showPostSignOnRecordModal && (
         <div className="modal d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }} tabIndex={-1}>
-          <div className="modal-dialog modal-lg modal-dialog-scrollable">
+          <div className="modal-dialog modal-lg modal-dialog-scrollable post-sign-record-modal">
             <div className="modal-content">
               <div className="modal-header">
                 <h6 className="modal-title">
@@ -5550,7 +5554,10 @@ const CandidateDetails = () => {
                 </button>
               </div>
               <div className="modal-body">
-                <form onSubmit={submitPostSignOnRecord} className="modal-body modal-form-row signon-record-form p-0">
+                <form
+                  onSubmit={submitPostSignOnRecord}
+                  className="modal-form-row signon-record-form modal-form-landscape"
+                >
                   <div className="form-group">
                     <label>Vessel</label>
                     <select
@@ -5686,18 +5693,9 @@ const CandidateDetails = () => {
                       required
                     />
                   </div>
-                  <div className="form-group full-width">
+                  <div className="form-group col-span-2">
                     <label>Period</label>
-                    <div
-                      className="form-control"
-                      style={{
-                        background: "var(--bg-secondary)",
-                        minHeight: "auto",
-                        height: "auto",
-                        paddingTop: "10px",
-                        paddingBottom: "10px",
-                      }}
-                    >
+                    <div className="form-control landscape-period-cell">
                       {postSignOnPeriodSummary.line ? (
                         <>
                           <div style={{ fontWeight: 600 }}>{postSignOnPeriodSummary.line}</div>
@@ -5723,7 +5721,7 @@ const CandidateDetails = () => {
 
                   <div className="form-group full-width">
                     <label>Document Uploads (max 20 MB each)</label>
-                    <div className="proposal-upload-grid">
+                    <div className="proposal-upload-grid landscape-upload-grid">
                       {SIGNON_RECORD_DOC_FORM_LABELS.map(({ key, label }) => {
                         const existing = postSignOnRecordForm[key];
                         const selected = postSignOnRecordUploadFiles[key];
@@ -5788,7 +5786,7 @@ const CandidateDetails = () => {
       {/* Sign Off Record modal: add/edit post-sign-off docs rows */}
       {showPostSignOffRecordModal && (
         <div className="modal d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }} tabIndex={-1}>
-          <div className="modal-dialog modal-lg modal-dialog-scrollable">
+          <div className="modal-dialog modal-lg modal-dialog-scrollable post-sign-record-modal">
             <div className="modal-content">
               <div className="modal-header">
                 <h6 className="modal-title">
@@ -5810,7 +5808,10 @@ const CandidateDetails = () => {
               </div>
 
               <div className="modal-body">
-                <form onSubmit={submitPostSignOffRecord} className="modal-body modal-form-row signon-record-form p-0">
+                <form
+                  onSubmit={submitPostSignOffRecord}
+                  className="modal-form-row signon-record-form modal-form-landscape"
+                >
                   <div className="form-group">
                     <label>Vessel</label>
                     <select
@@ -5889,6 +5890,24 @@ const CandidateDetails = () => {
                   </div>
 
                   <div className="form-group">
+                    <label>Sign Off Country</label>
+                    <select
+                      name="country_id"
+                      className="form-control"
+                      value={postSignOffRecordForm.country_id}
+                      onChange={handlePostSignOffRecordInputChange}
+                      required
+                    >
+                      <option value="">Select Country</option>
+                      {countries.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="form-group">
                     <label>Sign On Date</label>
                     <input
                       type="date"
@@ -5926,24 +5945,6 @@ const CandidateDetails = () => {
                   </div>
 
                   <div className="form-group">
-                    <label>Sign Off Country</label>
-                    <select
-                      name="country_id"
-                      className="form-control"
-                      value={postSignOffRecordForm.country_id}
-                      onChange={handlePostSignOffRecordInputChange}
-                      required
-                    >
-                      <option value="">Select Country</option>
-                      {countries.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="form-group">
                     <label>Arrival Date</label>
                     <input
                       type="date"
@@ -5966,7 +5967,7 @@ const CandidateDetails = () => {
                     />
                   </div>
 
-                  <div className="form-group">
+                  <div className="form-group col-span-3">
                     <label>Sign Off Reason</label>
                     <input
                       type="text"
@@ -5980,7 +5981,7 @@ const CandidateDetails = () => {
 
                   <div className="form-group full-width">
                     <label>Document Uploads (max 20 MB each)</label>
-                    <div className="proposal-upload-grid">
+                    <div className="proposal-upload-grid landscape-upload-grid">
                       {SIGNOFF_DOC_FORM_LABELS.map(({ key, label }) => {
                         const existing = postSignOffRecordForm[key];
                         const selected = postSignOffFiles[key];
@@ -6023,9 +6024,9 @@ const CandidateDetails = () => {
                     />
                   </div>
 
-                  <div className="form-group full-width">
+                  <div className="form-group col-span-2">
                     <label>Remarks Document</label>
-                    <div className="proposal-upload-item" style={{ maxWidth: "100%" }}>
+                    <div className="proposal-upload-item">
                       <input
                         type="file"
                         className="form-control"
