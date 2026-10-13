@@ -491,7 +491,12 @@ const FORMS_CATALOG = {
     { key: "bank_account_declaration", name: "Bank Account Declaration Form", canPreview: true, canDownload: true, status: "generated" },
   ],
   sea_rpsl_contract: [
-    { key: "magellan_rpsl_contract", name: "Magellan – RPSL Contract" },
+    { key: "rpsl_sea_fnsa_1", name: "01 - Magellan- FNSA 1 - RPSL Contract (SEA)", canPreview: true, canDownload: true, status: "generated" },
+    { key: "rpsl_sea_fnsa_2", name: "02 - Magellan- FNSA 2 - RPSL Contract (SEA)", canPreview: true, canDownload: true, status: "generated" },
+    { key: "rpsl_sea_fnsa_3", name: "03 - Magellan- FNSA 3 - RPSL Contract (SEA)", canPreview: true, canDownload: true, status: "generated" },
+    { key: "rpsl_sea_fnsa_4", name: "04 - Magellan- FNSA 4 - RPSL Contract (SEA)", canPreview: true, canDownload: true, status: "generated" },
+    { key: "rpsl_sea_fnsa_5", name: "05 - Magellan- FNSA 5 - RPSL Contract (SEA)", canPreview: true, canDownload: true, status: "generated" },
+    { key: "rpsl_sea_fnsa_7", name: "06 - Magellan- FNSA 7 - RPSL Contract (SEA)", canPreview: true, canDownload: true, status: "generated" },
   ],
   company_policy: [
     { key: "standard_terms_conditions_seafarers", name: "Standard Terms & Conditions for Seafarers" },
