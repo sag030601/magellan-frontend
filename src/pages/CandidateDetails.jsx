@@ -497,6 +497,11 @@ const FORMS_CATALOG = {
     { key: "rpsl_sea_fnsa_4", name: "04 - Magellan- FNSA 4 - RPSL Contract (SEA)", canPreview: true, canDownload: true, status: "generated" },
     { key: "rpsl_sea_fnsa_5", name: "05 - Magellan- FNSA 5 - RPSL Contract (SEA)", canPreview: true, canDownload: true, status: "generated" },
     { key: "rpsl_sea_fnsa_7", name: "06 - Magellan- FNSA 7 - RPSL Contract (SEA)", canPreview: true, canDownload: true, status: "generated" },
+    { key: "rpsl_sea_inchcape_17", name: "07 - Magellan- Inchcape 17 - RPSL Contract (SEA)", canPreview: true, canDownload: true, status: "generated" },
+    { key: "rpsl_sea_inchcape_20", name: "08 - Magellan- Inchcape 20 - RPSL Contract (SEA)", canPreview: true, canDownload: true, status: "generated" },
+    { key: "rpsl_sea_inchcape_21", name: "09 - Magellan- Inchcape 21 - RPSL Contract (SEA)", canPreview: true, canDownload: true, status: "generated" },
+    { key: "rpsl_sea_inchcape_23", name: "10 - Magellan- Inchcape 23 - RPSL Contract (SEA)", canPreview: true, canDownload: true, status: "generated" },
+    { key: "rpsl_sea_dulsco_1", name: "11 - Magellan- Dulsco 1 - RPSL Contract (SEA)", canPreview: true, canDownload: true, status: "generated" },
   ],
   company_policy: [
     { key: "standard_terms_conditions_seafarers", name: "Standard Terms & Conditions for Seafarers" },
@@ -549,19 +554,27 @@ const FORMS_CATALOG = {
   ],
 };
 
-function resolveFormsCatalogItem(item) {
-  const status = item.status || "template";
+function resolveFormsCatalogItem(item, registryByKey) {
+  const reg = registryByKey?.[item.key];
+  const status = reg
+    ? reg.status === "implemented"
+      ? "generated"
+      : reg.status === "source_missing"
+        ? "source_missing"
+        : item.status || "template"
+    : item.status || "template";
   return {
     key: item.key,
-    name: item.name,
+    name: reg?.name || item.name,
     status,
-    canPreview: item.canPreview === true,
-    canDownload: item.canDownload === true,
+    canPreview: reg ? reg.canPreview === true : item.canPreview === true,
+    canDownload: reg ? reg.canDownload === true : item.canDownload === true,
   };
 }
 
 function formsCatalogStatusLabel(item) {
   if (item.status === "generated") return "Generated document available";
+  if (item.status === "source_missing") return "Source template not deployed";
   if (item.status === "unavailable") return "Not available yet";
   return "Template available";
 }
@@ -818,6 +831,8 @@ const CandidateDetails = () => {
   const [errors, setErrors] = useState([]);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
+  /** Server `FORMS_REGISTRY` rows keyed by template key (preview/download flags). */
+  const [formsRegistryByKey, setFormsRegistryByKey] = useState(null);
   const [exportMenuCoords, setExportMenuCoords] = useState(null);
   const [aramcoPkgOpen, setAramcoPkgOpen] = useState(false);
   const [aramcoPkgDocs, setAramcoPkgDocs] = useState([]);
@@ -1458,6 +1473,28 @@ const CandidateDetails = () => {
       }
     };
     loadOwners();
+  }, [id]);
+
+  useEffect(() => {
+    const loadFormsRegistry = async () => {
+      try {
+        const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+        const r = await fetch(`${apiBase}/api/candidates/forms/registry`, {
+          headers: authHeaders(),
+        });
+        if (!r.ok) return;
+        const rows = await r.json();
+        if (!Array.isArray(rows)) return;
+        const byKey = {};
+        for (const row of rows) {
+          if (row?.key) byKey[row.key] = row;
+        }
+        setFormsRegistryByKey(byKey);
+      } catch {
+        /* non-fatal */
+      }
+    };
+    loadFormsRegistry();
   }, [id]);
 
   useEffect(() => {
@@ -4414,6 +4451,7 @@ const CandidateDetails = () => {
           activeTab={activeFormsTab}
           onTabChange={setActiveFormsTab}
           busy={exportBusy}
+          registryByKey={formsRegistryByKey}
           onView={viewFormsDocument}
           onDownload={downloadFormsDocument}
         />
@@ -6838,9 +6876,11 @@ function FormsLettersRowActions({ canPreview, canDownload, busy, onView, onDownl
   );
 }
 
-function FormsLettersPanel({ activeTab, onTabChange, busy, onView, onDownload }) {
+function FormsLettersPanel({ activeTab, onTabChange, busy, registryByKey, onView, onDownload }) {
   const tab = FORMS_TABS.find((t) => t.key === activeTab) || FORMS_TABS[0];
-  const items = (FORMS_CATALOG[tab.key] || []).map(resolveFormsCatalogItem);
+  const items = (FORMS_CATALOG[tab.key] || []).map((item) =>
+    resolveFormsCatalogItem(item, registryByKey),
+  );
   return (
     <div className="tab-content">
       <div className="sub-tabs" role="tablist">
