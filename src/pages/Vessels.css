@@ -1,30 +1,52 @@
-/* Vessel list: fit viewport without horizontal scroll; square table chrome */
+/* Vessel list: stay within main content; scroll inside table wrap when needed */
+.vessels-page {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.vessels-page > div,
+.vessels-page .p-6 {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .vessels-page .vessels-table-wrap {
-  overflow-x: hidden;
+  overflow-x: auto;
+  overflow-y: visible;
   width: 100%;
   max-width: 100%;
+  min-width: 0;
   border-radius: 0;
+  -webkit-overflow-scrolling: touch;
 }
 
 .vessels-page .vessels-table {
   table-layout: fixed;
   width: 100%;
-  max-width: 100%;
+  min-width: 72rem;
+  max-width: none;
 }
 
 .vessels-page .vessels-table th,
 .vessels-page .vessels-table td {
-  padding: 0.35rem 0.25rem;
+  padding: 0.35rem 0.35rem;
   font-size: 0.65rem;
   line-height: 1.25;
-  vertical-align: middle;
+  vertical-align: top;
 }
 
-/* Data cells: single-line ellipsis; full value on title attribute */
-.vessels-page .vessels-table td:not(.vessels-col-action) {
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* Long text columns: wrap; compact columns use .cell-compact */
+.vessels-page .vessels-table td:not(.vessels-col-action):not(.cell-compact):not(.cell-nowrap) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow: visible;
+  text-overflow: unset;
+}
+
+.vessels-page .vessels-table td.cell-compact {
   white-space: nowrap;
+  vertical-align: middle;
 }
 
 .vessels-page .vessels-table th:not(.vessels-col-action) {
@@ -34,6 +56,7 @@
   word-break: normal;
   overflow-wrap: normal;
   hyphens: none;
+  vertical-align: bottom;
 }
 
 .vessels-page .vessels-table td.cell-nowrap {
@@ -45,6 +68,7 @@
   overflow: visible;
   text-overflow: clip;
   white-space: nowrap;
+  vertical-align: middle;
   padding-left: 0.125rem;
   padding-right: 0.125rem;
 }

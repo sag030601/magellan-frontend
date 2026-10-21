@@ -6,23 +6,23 @@ import { documentHref } from "../lib/documentUrl";
 import { fetchVessels, queryKeys } from "../hooks/queries";
 import "./Vessels.css";
 
-/** Column widths for table-layout: fixed; last column reserves space for action icons */
+/** Column widths (px) for table-layout: fixed; table min-width set in Vessels.css */
 const VESSEL_LIST_COL_WIDTHS = [
-  "11%",
-  "10%",
-  "5.5%",
-  "4%",
-  "4%",
-  "4%",
-  "4%",
-  "7%",
-  "6%",
-  "8%",
-  "6%",
-  "7%",
-  "6%",
-  "7%",
-  "80px",
+  "7.5rem",
+  "6.75rem",
+  "4.5rem",
+  "4.5rem",
+  "4.25rem",
+  "3.75rem",
+  "3.75rem",
+  "5.5rem",
+  "4.5rem",
+  "6.5rem",
+  "5.5rem",
+  "5.75rem",
+  "5.5rem",
+  "7rem",
+  "5.75rem",
 ];
 
 function formatDate(val) {
@@ -225,19 +225,19 @@ export default function Vessels() {
                       <td className="font-medium" style={{ color: "var(--text-primary)" }} title={vessel.ship_name != null && String(vessel.ship_name).trim() !== "" ? String(vessel.ship_name) : undefined}>
                         {cell(vessel.ship_name)}
                       </td>
-                      <td style={{ color: "var(--text-primary)" }} title={vessel.imo_number != null && String(vessel.imo_number).trim() !== "" ? String(vessel.imo_number) : undefined}>
+                      <td className="cell-compact" style={{ color: "var(--text-primary)" }} title={vessel.imo_number != null && String(vessel.imo_number).trim() !== "" ? String(vessel.imo_number) : undefined}>
                         {cell(vessel.imo_number)}
                       </td>
-                      <td style={{ color: "var(--text-primary)" }} title={vessel.official_number != null && String(vessel.official_number).trim() !== "" ? String(vessel.official_number) : undefined}>
+                      <td className="cell-compact" style={{ color: "var(--text-primary)" }} title={vessel.official_number != null && String(vessel.official_number).trim() !== "" ? String(vessel.official_number) : undefined}>
                         {cell(vessel.official_number)}
                       </td>
-                      <td style={{ color: "var(--text-primary)" }} title={vessel.call_sign != null && String(vessel.call_sign).trim() !== "" ? String(vessel.call_sign) : undefined}>
+                      <td className="cell-compact" style={{ color: "var(--text-primary)" }} title={vessel.call_sign != null && String(vessel.call_sign).trim() !== "" ? String(vessel.call_sign) : undefined}>
                         {cell(vessel.call_sign)}
                       </td>
-                      <td style={{ color: "var(--text-primary)" }} title={vessel.gross_tonnage != null && String(vessel.gross_tonnage).trim() !== "" ? String(vessel.gross_tonnage) : undefined}>
+                      <td className="cell-compact" style={{ color: "var(--text-primary)" }} title={vessel.gross_tonnage != null && String(vessel.gross_tonnage).trim() !== "" ? String(vessel.gross_tonnage) : undefined}>
                         {cell(vessel.gross_tonnage)}
                       </td>
-                      <td style={{ color: "var(--text-primary)" }} title={vessel.kilo_watt != null && String(vessel.kilo_watt).trim() !== "" ? String(vessel.kilo_watt) : undefined}>
+                      <td className="cell-compact" style={{ color: "var(--text-primary)" }} title={vessel.kilo_watt != null && String(vessel.kilo_watt).trim() !== "" ? String(vessel.kilo_watt) : undefined}>
                         {cell(vessel.kilo_watt)}
                       </td>
                       <td style={{ color: "var(--text-primary)" }} title={vessel.ship_type != null && String(vessel.ship_type).trim() !== "" ? String(vessel.ship_type) : undefined}>
