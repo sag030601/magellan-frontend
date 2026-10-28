@@ -77,7 +77,10 @@ export async function fetchSignOnOffReport(filters) {
     if (v) params.set(k, v);
   });
   const res = await apiFetch(`/api/reports/sign-on-off?${params}`);
-  if (!res.ok) throw new Error("Failed to generate report");
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to generate report");
+  }
   return res.json();
 }
 

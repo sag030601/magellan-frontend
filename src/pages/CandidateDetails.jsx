@@ -16,6 +16,7 @@ import {
   rejectOversizedFile,
   uploadErrorMessage,
 } from "../lib/uploadLimits";
+import { candidateDetailsBackTarget } from "../lib/candidateDetailsBack";
 import "./CandidateDetails.css";
 
 /** Passport / CDC / Visa / STCW rows in `seafarers_docs` — STCW tab lists all other document types */
@@ -678,13 +679,7 @@ const CandidateDetails = () => {
   const { user } = useAuth();
   const queryClient = useQueryClient();
 
-  const fromReports = location.state?.from === "reports";
-  const backToPath = fromReports
-    ? (location.state?.backTo || "/admin/report")
-    : "/admin/candidates";
-  const backLabel = fromReports
-    ? (location.state?.backLabel || "Back to Reports")
-    : "Back to Candidates";
+  const { path: backToPath, label: backLabel } = candidateDetailsBackTarget(location.state);
 
   // State for main tabs (Basic, Documents, Services, Proposal, Medicals, Flag state, Pre Joining, Sign On, Sign Off, Communication, Forms & Letters)
   const [activeMainTab, setActiveMainTab] = useState("basic_details");

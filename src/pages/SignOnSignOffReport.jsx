@@ -2,112 +2,39 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { downloadReportCsv, downloadReportPdf } from "../lib/reportExport";
+import { buildExportTable, cap, daysRemaining, formatDate } from "../lib/signOnOffReportTable";
 import { useAuth } from "../context/AuthContext";
 import { fetchReportFilterOptions, fetchSignOnOffReport, queryKeys } from "../hooks/queries";
-import { readListFilterMemory, writeListFilterMemory } from "../lib/listFilterMemory";
-
-const FILTER_MEMORY_KEY = "sign-on-off-report";
-const EMPTY_FILTERS = {
-  employer_principal: "",
-  vessel_name: "",
-  rank: "",
-  status: "",
-  nationality: "",
-  vessel_type: "",
-  from_date: "",
-  to_date: "",
-};
-function formatDate(val) {
-  if (!val) return "—";
-  const d = typeof val === "number" ? new Date(val * 1000) : new Date(val);
-  if (Number.isNaN(d.getTime())) return "—";
-  return `${String(d.getDate()).padStart(2, "0")}-${String(d.getMonth() + 1).padStart(2, "0")}-${d.getFullYear()}`;
-}
-
-function toEpochMillis(val) {
-  if (!val) return null;
-  const d = typeof val === "number" ? new Date(val * 1000) : new Date(val);
-  const t = d.getTime();
-  return Number.isNaN(t) ? null : t;
-}
-
-function daysRemaining(signOffDue) {
-  if (!signOffDue) return "—";
-  try {
-    const ms = toEpochMillis(signOffDue);
-    if (!ms) return "—";
-    const due = new Date(ms);
-    due.setHours(0, 0, 0, 0);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (due <= today) return "0Y 0M 0D";
-    let totalMonths = (due.getFullYear() - today.getFullYear()) * 12 + (due.getMonth() - today.getMonth());
-    if (due.getDate() < today.getDate()) totalMonths -= 1;
-    const years = Math.floor(totalMonths / 12);
-    const months = totalMonths % 12;
-    const from = new Date(today.getFullYear(), today.getMonth() + totalMonths, today.getDate());
-    const days = Math.max(0, Math.round((due - from) / 86400000));
-    return `${years}Y ${months}M ${days}D`;
-  } catch {
-    return "—";
-  }
-}
-
-function cap(str) {
-  return str != null && String(str).trim() !== "" ? String(str).toUpperCase() : "—";
-}
-
-function buildExportTable(reportType, records, to) {
-  const today = new Date().toISOString().slice(0, 10);
-
-  if (reportType === "signOn") {
-    return {
-      headers: ["Crew ID", "Crew Name", "Rank", "Nationality", "Current Ship", "DOB", "Place of Birth", "Passport No.", "PPT Issue", "PPT Expiry", "CDC No.", "CDC Issue", "CDC Expiry", "Contract Start", "Sign On Date", "Sign Off Due"],
-      rows: records.map((r) => [
-        r.candidate_id, `${cap(r.given_name)} ${cap(r.surname)}`, cap(r.rank_name), cap(r.nationality_name), cap(r.vessel_name),
-        formatDate(r.date_of_birth), cap(r.place_of_birth), r.passport_number ?? "", formatDate(r.passport_issue_date), formatDate(r.passport_expiry_date),
-        r.cdc_number ?? "", formatDate(r.cdc_issue_date), formatDate(r.cdc_expiry_date),
-        formatDate(r.contract_start_date), formatDate(r.sign_on_date), formatDate(r.sign_off_due),
-      ]),
-      baseName: `sign-on-report-${today}`,
-    };
-  }
-
-  if (reportType === "allSignOn") {
-    return {
-      headers: ["Crew ID", "Crew Name", "Rank", "DOB", "Current Ship", "Status", "Contract Start", "Sign On Date", "Sign Off Due", "Days Remaining"],
-      rows: records.map((r) => {
-        const status = r.availability_status_name
-          ? String(r.availability_status_name).toUpperCase()
-          : "—";
-        return [r.candidate_id, `${cap(r.given_name)} ${cap(r.surname)}`, cap(r.rank_name), formatDate(r.date_of_birth), cap(r.vessel_name), status, formatDate(r.contract_start_date), formatDate(r.sign_on_date), formatDate(r.sign_off_due), daysRemaining(r.sign_off_due)];
-      }),
-      baseName: `all-sign-on-report-${today}`,
-    };
-  }
-
-  return {
-    headers: ["Crew ID", "Crew Name", "Rank", "DOB", "Current/Previous Ship", "Status", "Sign On Date", "Sign Off Date", "Contract Days", "Sign Off Reason"],
-    rows: records.map((r) => [
-      r.candidate_id, `${cap(r.given_name)} ${cap(r.surname)}`, cap(r.rank_name), formatDate(r.date_of_birth), cap(r.vessel_name),
-      r.availability_status_name ? String(r.availability_status_name).toUpperCase() : "ON-LEAVE",
-      formatDate(r.sign_on_date), formatDate(r.sign_off_date), daysRemaining(r.sign_off_due), cap(r.sign_off_reason),
-    ]),
-    baseName: `sign-off-report-${today}`,
-  };
-}
+import {
+  generatedFromResponse,
+  readSignOnOffReportSession,
+  writeSignOnOffReportSession,
+} from "../lib/signOnOffReportSession";
 
 export default function SignOnSignOffReport() {
-  const saved = readListFilterMemory(FILTER_MEMORY_KEY);
+  const { user } = useAuth();
+  const userId = user?.id != null ? String(user.id) : "";
   const [formError, setFormError] = useState(null);
-  const [filters, setFilters] = useState(() => ({ ...EMPTY_FILTERS, ...(saved?.filters || {}) }));
+  const [generateError, setGenerateError] = useState(null);
+  const [boundUserId, setBoundUserId] = useState(userId);
+  const [filters, setFilters] = useState(() => readSignOnOffReportSession(userId).filters);
+  const [generated, setGenerated] = useState(() => readSignOnOffReportSession(userId).generated);
   const [exportingPdf, setExportingPdf] = useState(false);
 
   useEffect(() => {
-    writeListFilterMemory(FILTER_MEMORY_KEY, { filters });
-  }, [filters]);
+    if (boundUserId === userId) return;
+    const saved = readSignOnOffReportSession(userId);
+    setBoundUserId(userId);
+    setFilters(saved.filters);
+    setGenerated(saved.generated);
+    setGenerateError(null);
+    setFormError(null);
+  }, [userId, boundUserId]);
 
-  const { user } = useAuth();
+  useEffect(() => {
+    if (!userId || boundUserId !== userId) return;
+    writeSignOnOffReportSession(userId, { filters, generated });
+  }, [userId, boundUserId, filters, generated]);
   const { data: optsData, isLoading: loadingOptions, isPlaceholderData, error: optsError } = useQuery({
     queryKey: [...queryKeys.reportFilterOptions, user?.id ?? null, filters.employer_principal || null],
     queryFn: () => fetchReportFilterOptions(filters.employer_principal),
@@ -142,19 +69,32 @@ export default function SignOnSignOffReport() {
     e.preventDefault();
     if (!filters.status) { setFormError("Please select a type."); return; }
     setFormError(null);
-    reportMutation.reset();
-    reportMutation.mutate({ ...filters, employer_principal: principalValue, vessel_name: vesselValue });
+    const payload = { ...filters, employer_principal: principalValue, vessel_name: vesselValue };
+    reportMutation.mutate(payload, {
+      onSuccess: (data) => {
+        const next = generatedFromResponse(payload, data);
+        if (!next) {
+          setGenerateError("Failed to generate report");
+          return;
+        }
+        setGenerateError(null);
+        setGenerated(next);
+      },
+      onError: (err) => {
+        setGenerateError(err?.message || "Failed to generate report");
+      },
+    });
   };
 
-  const result = reportMutation.data;
   const loadingReport = reportMutation.isPending;
-  const error = formError || optsError?.message || (!result && reportMutation.error?.message) || null;
+  const error = formError || generateError || optsError?.message || null;
+  const result = generated?.result || null;
   const { records = [], reportType, from, to } = result || {};
   const hasRecords = records.length > 0;
 
   const exportCsv = () => {
     if (!hasRecords) return;
-    const { headers, rows, baseName } = buildExportTable(reportType, records, to);
+    const { headers, rows, baseName } = buildExportTable(reportType, records);
     downloadReportCsv(headers, rows, `${baseName}.csv`);
   };
 
@@ -162,7 +102,7 @@ export default function SignOnSignOffReport() {
     if (!hasRecords || exportingPdf) return;
     setExportingPdf(true);
     try {
-      const { headers, rows, baseName } = buildExportTable(reportType, records, to);
+      const { headers, rows, baseName } = buildExportTable(reportType, records);
       await downloadReportPdf({ headers, rows, filename: `${baseName}.pdf` });
     } finally {
       setExportingPdf(false);
@@ -184,7 +124,7 @@ export default function SignOnSignOffReport() {
       <div className="rounded-xl overflow-hidden" style={{ background: "var(--bg-card)", boxShadow: "var(--shadow-sm)", border: "1px solid var(--border-primary)" }}>
         <div className="px-6 py-5">
           <form onSubmit={handleSubmit} className="space-y-4">
-            {error && !result && (
+            {error && (
               <div className="rounded-lg border px-4 py-3 text-sm" style={{ background: "var(--bg-secondary)", borderColor: "var(--danger)", color: "var(--danger)" }}>{error}</div>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
@@ -258,7 +198,7 @@ export default function SignOnSignOffReport() {
       </div>
 
       {/* Report result */}
-      {result && (
+      {generated && (
         <div className="rounded-xl print:shadow-none print:border" style={{ background: "var(--bg-card)", boxShadow: "var(--shadow-sm)", border: "1px solid var(--border-primary)" }}>
           <div className="px-6 py-4 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3" style={{ borderColor: "var(--border-primary)", background: "var(--bg-secondary)" }}>
             <div>
